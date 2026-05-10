@@ -864,3 +864,321 @@ click:   x + width//2,  y + height//2  — center of element
 errors:  {"error": "message"}  HTTP 400|500
          {"success": false, "error": "message"}  for /api/action
 ```
+
+---
+
+## v2 Surface — Agentic Loop & Harness Substrate
+
+The endpoints documented above are stable and continue to work.  Version 2
+adds richer endpoints driven by `agentic_features_design.md`.  Every v2
+endpoint returns an object with `ok: true|false` plus a structured
+`error: {code, message, recoverable, suggested_next_tool, context}` on
+failure.  Legacy `success` / `error: "..."` fields are emitted alongside
+the new shape so older clients keep working.
+
+### Identity, capability, monitor probes
+
+```
+GET  /api/capabilities
+     → {ok, platform, adapter, version, protocol_version,
+        supports: {accessibility_tree, uia_invoke, occlusion_detection,
+                   drag, ocr, vlm, redaction, scenarios, tracing,
+                   replay, image_blur},
+        config: {tree_max_depth, ascii_grid}}
+
+GET  /api/monitors
+     → {ok, monitors: [{index, primary, bounds, scale_factor,
+                        logical_bounds, physical_bounds}]}
+
+GET  /api/windows                       # extended
+     → {ok, count, is_mock,
+        windows: [{index, handle, title, process, pid, bounds, focused,
+                   window_uid, monitor_index?, scale_factor?,
+                   logical_bounds?, physical_bounds?}]}
+
+GET  /api/find_element?selector=X&window_uid=Y[&window_index=N]
+     → {ok, window_uid, element_id, selector, bounds,
+        ambiguous_matches, all_matches:[{element_id, bounds, name, role}]}
+```
+
+Selector grammar (auto-detected):
+
+- XPath-ish (default; starts with a role): `Window/Pane/Button[name="OK"]`
+- CSS-ish (uses `>` or whitespace combinators): `Window > Pane Button[name~="Save.*"]`
+
+Predicates: `name=`, `name~=` (regex, full match), `value=`, `value~=`,
+`role=`, `keyboard_shortcut=`, `enabled=true|false`, `focused=true|false`,
+`index=N`.  CSS `:nth-of-type(N)` accepted.
+
+### Element-targeted actions
+
+All return an `ActionReceipt`: `{ok, step_id, caused_by_step_id, action,
+dry_run, target:{window_uid, element_id, selector, bounds},
+before:{tree_hash, focused_selector}, after:{...}, changed, new_dialogs,
+duration_ms}`.
+
+```
+POST /api/element/click
+     {window_uid|window_index, element_id|selector,
+      button?, count?, dry_run?, confirm_token?}
+
+POST /api/element/focus          {window_*, element_id|selector, dry_run?}
+POST /api/element/invoke         {window_*, element_id|selector, dry_run?}
+POST /api/element/set_value      {window_*, element_id|selector, value, clear_first?, dry_run?}
+POST /api/element/select         {window_*, element_id|selector, option_name|option_index, dry_run?}
+
+POST /api/hover                  {x, y, hover_ms?}    or   element form
+POST /api/element/right_click    {window_*, element_id|selector}
+POST /api/element/double_click   {window_*, element_id|selector}
+POST /api/element/key            {window_*, element_id|selector, keys}
+POST /api/element/clear_text     {window_*, element_id|selector}
+POST /api/drag
+     {from:{x,y}|{selector}|{element_id},
+      to:  {x,y}|{selector}|{element_id},
+      modifiers?:[...], duration_s?, window_*}
+```
+
+### Observation with diff and synchronization
+
+```
+GET  /api/observe?window_*[&since=<tree_token>][&format=custom|json-patch]
+     full:    {ok, format:"full",   tree, tree_token, base_token:null, ...}
+     diff:    {ok, format:"custom"|"json-patch",
+               changes:[...], tree_token, base_token, unchanged, tree_hash}
+
+GET  /api/structure?window_*[&roles=R1,R2][&exclude_roles=...]
+                    [&name_regex=...][&visible_only=true]
+                    [&max_text_len=N][&prune_empty=true]
+                    [&max_nodes=N][&page_cursor=…]
+     → {ok, window, window_uid, element_count, node_count,
+        tree, tree_hash, tree_token, truncated, next_cursor}
+
+POST /api/wait_for
+     {any_of:[
+        {type:"element_appears",    selector:"..."},
+        {type:"element_disappears", selector:"..."|element_id:"..."},
+        {type:"text_visible",       regex:"..."},
+        {type:"window_appears",     title_regex:"..."},
+        {type:"window_disappears",  window_uid:"..."},
+        {type:"tree_changes",       since:"<tree_token>"},
+        {type:"focused_changes"}],
+      timeout_ms?, poll_ms?, window_uid?}
+     → match:   {ok, matched_index, matched_detail, elapsed_ms, polls}
+     → timeout: {ok:false, error:{code:"Timeout",...}, elapsed_ms, polls}
+
+POST /api/wait_idle  {window_*, quiet_ms?, timeout_ms?, poll_ms?}
+```
+
+### Composite action+observe
+
+```
+POST /api/element/click_and_observe   {…click args…, wait_after_ms?, since?}
+POST /api/type_and_observe            {text, wait_after_ms?, since?, window_uid?}
+POST /api/key_and_observe             {keys, wait_after_ms?, since?, window_uid?}
+```
+Returns the `ActionReceipt` plus `observation:` (the diff or full tree).
+
+### Snapshots
+
+```
+POST   /api/snapshot               → {ok, snapshot_id, ts, summary}
+GET    /api/snapshot/<id>          → {ok, windows, trees, tree_hashes, ts}
+POST   /api/snapshot/diff          {a, b, format?}
+                                   → {ok, windows_added, windows_removed,
+                                       per_window_changes:{<uid>:{format,changes}}}
+DELETE /api/snapshot/<id>          → {ok, dropped}
+```
+
+Snapshots have a 5-minute TTL and LRU-32 capacity per process.
+
+### Tracing and replay
+
+```
+POST /api/trace/start    {label?}    → {ok, trace_id, started_at, dir}
+POST /api/trace/stop                  → {ok, trace_id, path, step_count,
+                                          duration_ms}
+GET  /api/trace/status                → {ok, active_trace_id, step_count, dir}
+
+POST /api/replay/start   {path, mode:"execute"|"verify",
+                          on_divergence:"stop"|"warn"|"resume"}
+                                       → {ok, replay_id, total, mode, label}
+POST /api/replay/step    {replay_id}   → {ok, position, total, tool,
+                                          divergence?, actual_summary, finished}
+POST /api/replay/status  {replay_id}   → {ok, position, total, finished,
+                                          divergences:[…]}
+POST /api/replay/stop    {replay_id}   → {ok, stopped}
+```
+
+Trace files live under `traces/<trace_id>/`:
+- `trace.jsonl`               one record per tool call
+- `screenshots/step-NNNNN-full.png`     (cadence-gated)
+- `screenshots/step-NNNNN-window.png`   (cadence-gated)
+
+Per-tool comparison rules used by `mode="verify"` are defined in
+`replay.py:COMPARE_FIELDS`.  Recorded result_summary fields outside the
+rule set are ignored.
+
+### Scenarios (mock mode)
+
+```
+POST /api/scenario/load   {path}    → {ok, scenario, state, states:[...]}
+```
+
+Or as a CLI flag: `python main.py --mock --scenario scenarios_examples/login.yaml`.
+
+YAML schema (excerpt — full reference in `agentic_features_design.md` §15.5):
+
+```yaml
+name: …
+initial_state: <state-name>
+states:
+  <name>:
+    windows:
+      - uid: mock:<id>
+        title: …
+        bounds: {x,y,width,height}
+        tree: {role, name, value?, id?, bounds?, secret?, children: […]}
+reactions:
+  - on: {tool: type_text, target_id: u, text_regex: "(.+)"}
+    when: [{id: …, value: …}, {id: …, value_not_empty: true}]
+    set: [{id: …, value: "{text}"}]
+    transition_to: <next-state>
+oracles:
+  success: [<predicate>]
+  failure: [<predicate>]
+```
+
+Notes:
+- `on`, `match`, or YAML's `True` (the `on` alias quirk) are all accepted.
+- Reactions fire after the action would have succeeded, in declaration
+  order; the first match wins.
+- `{text}` interpolation pulls from `text_regex`'s first capture group.
+
+### Oracles
+
+```
+POST /api/assert_state    {predicate: [
+    {kind:"element_exists",   selector, window_uid?},
+    {kind:"element_absent",   selector, window_uid?},
+    {kind:"value_equals",     selector, expected},
+    {kind:"value_matches",    selector, regex},
+    {kind:"text_visible",     regex, mode?:"tree"|"ocr"|"auto"},
+    {kind:"window_focused",   title_regex},
+    {kind:"window_exists",    title_regex|window_uid},
+    {kind:"tree_hash_equals", expected_hash},
+    {kind:"screenshot_similar", reference_path, min_ssim?}
+]}
+    → {ok, all_passed, results:[{kind, passed, observed, args}]}
+```
+
+### Budgets, redaction, audit, propose_action
+
+```
+GET  /api/budget_status     → {ok, configured, actions, screenshots,
+                                vlm_tokens, session_seconds, actions_per_minute}
+
+GET  /api/redaction_status  → {ok, enabled, active, patterns_count,
+                                applied_count, blur_screenshots}
+
+POST /api/propose_action    {action, args:{...}}
+                             → {ok, confirm_token, expires_at,
+                                 would_target:{window_uid, selector, bounds,
+                                               screenshot_b64}}
+```
+
+Budgets are enabled from CLI flags on `main.py`:
+
+```
+--max-actions N
+--max-screenshots N
+--max-vlm-tokens N
+--max-session-seconds N
+--actions-per-minute N
+```
+
+Redaction reads `config.redaction`:
+
+```jsonc
+{
+  "enabled": true,
+  "window_title_patterns": ["1Password"],
+  "element_name_patterns": ["Password","PIN"],
+  "element_role_patterns": ["PasswordEdit"],
+  "ocr_text_patterns":     ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+  "replacement":           "[REDACTED]",
+  "blur_screenshots":      false
+}
+```
+
+Audit log opted in via `config.logging`:
+
+```jsonc
+{
+  "logging": {
+    "audit":            true,
+    "audit_path":       "./audit.log",
+    "audit_max_bytes":  10485760,
+    "audit_backups":    3
+  },
+  "audit": {
+    "redact_arg_keys": ["text","value","password","api_key","Authorization"]
+  }
+}
+```
+
+Allowlist via `config.actions`:
+
+```jsonc
+{
+  "actions": {
+    "allow":   ["click_element","focus_element","wait_for"],
+    "deny":    ["press_key","type_text"],
+    "default": "allow"
+  }
+}
+```
+
+Confirmation tokens via `config.confirmation_required`:
+
+```jsonc
+{
+  "confirmation_required": [
+    {"name_regex": "(?i)delete|remove|send|pay|sign"},
+    {"role": "Button", "name_regex": "(?i)submit"}
+  ],
+  "confirmation": {"bbox_tolerance_px": 20, "ttl_seconds": 60}
+}
+```
+
+### Health and metrics
+
+```
+GET /api/healthz            → {ok, uptime_s, step_count, adapter, version}
+GET /api/metrics            → Prometheus text format (oso_step_count,
+                               oso_uptime_seconds, oso_actions_used,
+                               oso_screenshots_used, oso_active_trace)
+```
+
+### Error envelope (v2 endpoints)
+
+```json
+{
+  "ok": false,
+  "success": false,
+  "step_id": 99,
+  "error": {
+    "code": "ElementNotFound",
+    "message": "no element matches selector …",
+    "recoverable": true,
+    "suggested_next_tool": "find_element",
+    "context": {"selector": "...", "window_uid": "..."}
+  }
+}
+```
+
+Codes (full table with HTTP statuses in `errors.py`):
+`ElementNotFound`, `ElementOccluded`, `ElementDisabled`, `WindowGone`,
+`WindowOccluded`, `Timeout`, `PatternUnsupported`, `RateLimited`,
+`BudgetExceeded`, `PermissionDenied`, `ConfirmationRequired`,
+`ConfirmationInvalid`, `SnapshotExpired`, `ScenarioInvalid`,
+`PlatformUnsupported`, `PredicateUnsupported`, `BadRequest`, `Internal`.
