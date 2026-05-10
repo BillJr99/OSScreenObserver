@@ -445,7 +445,7 @@ class LLMClient:
         headers = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        return _post(self.base_url, "/v1/chat/completions", payload, headers, timeout=120)
+        return _post(self.base_url, "/api/v1/chat/completions", payload, headers, timeout=120)
 
 # ─── Agentic loop ─────────────────────────────────────────────────────────────
 
@@ -709,19 +709,20 @@ def pick_model(models: List[str], fallback: str = "llama3.2:3b") -> str:
 
 
 def list_models(llm_base: str, api_key: str) -> List[str]:
-    """Try to fetch model list from /v1/models. Returns empty list on failure."""
+    """Try to fetch model list from /api/v1/models. Returns empty list on failure."""
     try:
         headers: Dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         req = urllib.request.Request(
-            llm_base.rstrip("/") + "/v1/models",
+            llm_base.rstrip("/") + "/api/v1/models",
             headers=headers,
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
         return [m["id"] for m in data.get("data", [])]
-    except Exception:
+    except Exception as e:
+        print(_c(f" failed ({e})", "red"))
         return []
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
