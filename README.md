@@ -16,14 +16,14 @@ Both interfaces share the same underlying observer and can run simultaneously.
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │  main.py                                                                │
-│  ┌──────────────────────┐      ┌───────────────────────────────────┐   │
-│  │  Flask web inspector  │      │  MCP stdio server                 │   │
-│  │  (background thread)  │      │  (main thread, stdin/stdout)      │   │
-│  └──────────┬───────────┘      └──────────────────┬────────────────┘   │
-│             │                                      │                    │
-│             └──────────────┬───────────────────────┘                   │
+│  ┌──────────────────────┐      ┌───────────────────────────────────┐    │
+│  │  Flask web inspector │      │  MCP stdio server                 │    │
+│  │  (background thread) │      │  (main thread, stdin/stdout)      │    │
+│  └──────────┬───────────┘      └──────────────────┬────────────────┘    │
+│             │                                     │                     │
+│             └──────────────┬──────────────────────┘                     │
 │                            ▼                                            │
-│                    ScreenObserver                                        │
+│                    ScreenObserver                                       │
 │                   /      |       \                                      │
 │          Accessibility  ASCII    Description                            │
 │             Tree      Renderer   Generator                              │
