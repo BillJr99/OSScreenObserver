@@ -1,0 +1,29 @@
+# OS Screen Observer - Dependencies
+# Install with: pip install -r requirements.txt
+#
+# Platform notes:
+#   Windows: pywinauto + pywin32 + psutil provide full UIA support
+#   macOS:   mss + pyobjc (optional; AX tree currently stub)
+#   Linux:   mss + wmctrl (wmctrl must be installed via apt/brew; AT-SPI tree currently stub)
+#   All:     --mock flag runs without any OS-specific deps
+
+# Core (all platforms)
+flask>=3.0.0
+flask-cors>=4.0.0
+mss>=9.0.0
+Pillow>=10.0.0
+anthropic>=0.40.0
+
+# OCR (optional but recommended)
+pytesseract>=0.3.10
+
+# Input automation / actions (all platforms)
+pyautogui>=0.9.54
+
+# Windows-specific (skip on macOS/Linux)
+pywinauto>=0.6.8; sys_platform == "win32"
+pywin32>=306; sys_platform == "win32"
+psutil>=5.9.0; sys_platform == "win32"
+
+# Development / testing
+# No additional test dependencies needed; use --mock flag
