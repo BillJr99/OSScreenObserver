@@ -199,6 +199,53 @@ _TOOLS: List[Dict] = [
             "required": ["keys"],
         },
     },
+    {
+        "name": "get_full_screenshot",
+        "description": (
+            "Capture a screenshot of a window and render its accessibility element tree "
+            "as an ASCII spatial sketch in a single call. The sketch automatically uses "
+            "OCR overlay to fill in visible text. "
+            "Returns: window title, PNG as base64, image pixel dimensions, and the sketch string."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_index": {
+                    "type": "integer",
+                    "description": "Window index from list_windows. Omit for focused window.",
+                },
+                "grid_width": {
+                    "type": "integer",
+                    "description": "Sketch width in characters (default: 110).",
+                },
+                "grid_height": {
+                    "type": "integer",
+                    "description": "Sketch height in characters (default: 38).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_visible_areas",
+        "description": (
+            "Return the bounding rectangles of the portions of a window that are "
+            "currently visible — i.e. not covered by other windows and within the "
+            "monitor bounds. Each region is {x, y, width, height} in absolute screen pixels. "
+            "Useful for verifying that a target coordinate is clickable without "
+            "hitting an overlapping window."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_index": {
+                    "type": "integer",
+                    "description": "Window index from list_windows.",
+                },
+            },
+            "required": ["window_index"],
+        },
+    },
 ]
 
 
@@ -323,6 +370,12 @@ class MCPServer:
             elif name == "press_key":
                 return self.observer.perform_action("key", value=args.get("keys", ""))
 
+            elif name == "get_full_screenshot":
+                return self._t_full_screenshot(hwnd, info, args)
+
+            elif name == "get_visible_areas":
+                return self._t_visible_areas(hwnd, info, windows)
+
             else:
                 return {"error": f"Unknown tool: {name}"}
 
@@ -403,6 +456,53 @@ class MCPServer:
             "format": "png",
             "encoding": "base64",
             "data": base64.b64encode(shot).decode(),
+        }
+
+    def _t_full_screenshot(self, hwnd, info, args) -> Dict:
+        import base64
+        # Always capture all monitors combined
+        shot = self.observer.get_full_display_screenshot()
+        if shot is None:
+            return {"error": "Screenshot capture failed"}
+
+        sketch = None
+        tree = self.observer.get_element_tree(hwnd) if hwnd is not None else None
+        if tree is not None:
+            ref = info.bounds if info else self.observer._get_screen_bounds()
+            sketch = self.renderer.render(
+                root             = tree,
+                screen_bounds    = ref,
+                grid_width       = args.get("grid_width"),
+                grid_height      = args.get("grid_height"),
+                screenshot_bytes = shot,
+            )
+
+        img_w = img_h = None
+        try:
+            import io as _io
+            from PIL import Image as _Image
+            _img = _Image.open(_io.BytesIO(shot))
+            img_w, img_h = _img.size
+        except Exception:
+            pass
+
+        return {
+            "window":   info.title if info else "(full screen)",
+            "format":   "png",
+            "encoding": "base64",
+            "width":    img_w,
+            "height":   img_h,
+            "data":     base64.b64encode(shot).decode(),
+            "sketch":   sketch,
+        }
+
+    def _t_visible_areas(self, hwnd, info, windows) -> Dict:
+        if hwnd is None:
+            return {"error": "window_index is required for get_visible_areas"}
+        areas = self.observer.get_visible_areas(hwnd, windows)
+        return {
+            "window":          info.title if info else "(unknown)",
+            "visible_regions": areas,
         }
 
     def _t_click_at(self, args) -> Dict:

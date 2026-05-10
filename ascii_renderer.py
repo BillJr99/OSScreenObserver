@@ -214,14 +214,15 @@ class ASCIIRenderer:
                     if grid[y][gx2] in (" ", bx["v"]):
                         grid[y][gx2] = bx["v"]
 
-                inner_w = gx2 - gx1 - 2   # columns available inside the box
-                inner_h = gy2 - gy1 - 2   # rows available inside the box
+                # Interior cells run from gx1+1 to gx2-1 (inclusive), so count = gx2-gx1-1.
+                inner_w = gx2 - gx1 - 1   # columns available inside the box
+                inner_h = gy2 - gy1 - 1   # rows available inside the box
 
                 if inner_w < 1:
-                    # Box is too narrow to fit anything
+                    # Box is too narrow to fit anything (shouldn't happen given min-size above)
                     return
 
-                if inner_h <= 0 or inner_w < 3:
+                if inner_h < 1 or inner_w < 3:
                     # Single interior row or very narrow: use legend
                     key = _legend_key(counter[0])
                     counter[0] += 1
