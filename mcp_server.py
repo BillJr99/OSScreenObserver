@@ -745,6 +745,111 @@ _TOOLS: List[Dict] = [
             "required": [],
         },
     },
+    # ── P6: extra input verbs ────────────────────────────────────────────────
+    {
+        "name": "hover_at",
+        "description": "Move the mouse to (x, y) and pause hover_ms (default 250).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "x": {"type": "integer"}, "y": {"type": "integer"},
+                "hover_ms": {"type": "integer"},
+            },
+            "required": ["x", "y"],
+        },
+    },
+    {
+        "name": "hover_element",
+        "description": "Move the mouse to an element's center and pause hover_ms.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "hover_ms":     {"type": "integer"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "right_click_element",
+        "description": "Right-click an element (synonym for click_element button=right).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "double_click_element",
+        "description": "Double-click an element (synonym for click_element count=2).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "drag",
+        "description": (
+            "Drag from a starting point to an end point.  Each end is "
+            "{x,y} or {selector} or {element_id}.  Optional modifier keys "
+            "are held during the drag."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "from":      {"type": "object"},
+                "to":        {"type": "object"},
+                "modifiers": {"type": "array", "items": {"type": "string"}},
+                "duration_s": {"type": "number"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+            },
+            "required": ["from", "to"],
+        },
+    },
+    {
+        "name": "key_into_element",
+        "description": "Click an element and then press a key combination atomically.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "keys":         {"type": "string"},
+            },
+            "required": ["keys"],
+        },
+    },
+    {
+        "name": "clear_text",
+        "description": "Click an editable element and select-all + delete.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+            },
+            "required": [],
+        },
+    },
     {
         "name": "get_ocr",
         "description": (

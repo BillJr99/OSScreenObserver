@@ -1106,6 +1106,64 @@ def create_web_app(
     def api_propose():
         return _tool_response("propose_action", request.get_json(force=True) or {})
 
+    # ── P6: extra input verbs ────────────────────────────────────────────────
+
+    @app.route("/api/hover", methods=["POST"])
+    def api_hover():
+        body = request.get_json(force=True) or {}
+        if "x" in body and "y" in body and not body.get("selector") and not body.get("element_id"):
+            return _tool_response("hover_at", body)
+        return _tool_response("hover_element", body)
+
+    @app.route("/api/element/right_click", methods=["POST"])
+    def api_right_click():
+        return _tool_response("right_click_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/double_click", methods=["POST"])
+    def api_double_click():
+        return _tool_response("double_click_element", request.get_json(force=True) or {})
+
+    @app.route("/api/drag", methods=["POST"])
+    def api_drag():
+        return _tool_response("drag", request.get_json(force=True) or {})
+
+    @app.route("/api/element/key", methods=["POST"])
+    def api_key_into():
+        return _tool_response("key_into_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/clear_text", methods=["POST"])
+    def api_clear_text():
+        return _tool_response("clear_text", request.get_json(force=True) or {})
+
+    # ── Telemetry: metrics in Prometheus format ─────────────────────────────
+
+    @app.route("/api/metrics")
+    def api_metrics():
+        from session import get_session
+        s = get_session()
+        lines = [
+            "# HELP oso_step_count Total tool calls processed",
+            "# TYPE oso_step_count counter",
+            f"oso_step_count {s.steps.count}",
+            "# HELP oso_uptime_seconds Process uptime",
+            "# TYPE oso_uptime_seconds gauge",
+            f"oso_uptime_seconds {int(s.steps.uptime_s)}",
+        ]
+        if s.budgets is not None:
+            st = s.budgets.status()
+            lines += [
+                "# TYPE oso_actions_used counter",
+                f"oso_actions_used {st['actions']['used']}",
+                "# TYPE oso_screenshots_used counter",
+                f"oso_screenshots_used {st['screenshots']['used']}",
+            ]
+        if s.active_trace is not None:
+            lines.append(f"oso_active_trace 1")
+        else:
+            lines.append(f"oso_active_trace 0")
+        body = "\n".join(lines) + "\n"
+        return body, 200, {"Content-Type": "text/plain; version=0.0.4"}
+
     @app.route("/api/healthz")
     def api_healthz():
         from session import get_session

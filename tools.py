@@ -1730,6 +1730,164 @@ REGISTRY.update({
 })
 
 
+# ─── P6: extra input verbs ────────────────────────────────────────────────────
+
+def hover_at(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    step_id, _ = _new_step_id("hover_at")
+    x = int(args.get("x", 0)); y = int(args.get("y", 0))
+    hover_ms = int(args.get("hover_ms", 250))
+    try:
+        import pyautogui
+        pyautogui.moveTo(x, y)
+        time.sleep(hover_ms / 1000.0)
+        ok = True
+    except Exception:
+        ok = False
+    return {"ok": ok, "success": ok, "action": "hover_at",
+            "step_id": step_id, "caused_by_step_id": step_id,
+            "x": x, "y": y, "hover_ms": hover_ms}
+
+
+def hover_element(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    hover_ms = int(args.get("hover_ms", 250))
+    def _exec(elem: UIElement, info: WindowInfo, _a: Dict[str, Any]
+              ) -> Dict[str, Any]:
+        try:
+            import pyautogui
+            pyautogui.moveTo(elem.bounds.center_x, elem.bounds.center_y)
+            time.sleep(hover_ms / 1000.0)
+            return {"success": True, "action": "hover", "hover_ms": hover_ms}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    return _do_element_action(ctx, action_name="hover_element",
+                              args=args, executor=_exec)
+
+
+def right_click_at(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    return click_at(ctx, dict(args, button="right"))
+
+
+def right_click_element(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    return click_element(ctx, dict(args, button="right"))
+
+
+def double_click_at(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    return click_at(ctx, dict(args, double=True))
+
+
+def double_click_element(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    return click_element(ctx, dict(args, count=2))
+
+
+def drag(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    step_id, _ = _new_step_id("drag")
+    src = args.get("from") or {}
+    dst = args.get("to") or {}
+    modifiers = list(args.get("modifiers") or [])
+    # Resolve element references on either end.
+    windows, res = _resolve_window(ctx, args)
+    info = res.info or _focused_window(windows)
+    tree = ctx.observer.get_element_tree(info.handle) if info else None
+
+    def _to_xy(spec: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+        if "x" in spec and "y" in spec:
+            return int(spec["x"]), int(spec["y"])
+        eid = spec.get("element_id")
+        sel_text = spec.get("selector")
+        if tree is None:
+            return None
+        if sel_text:
+            try:
+                resu = sel.resolve(tree, sel.parse(sel_text))
+                if resu.matches:
+                    e = resu.matches[0]
+                    return e.bounds.center_x, e.bounds.center_y
+            except sel.SelectorParseError:
+                return None
+        if eid:
+            e = _find_by_id(tree, eid)
+            if e is not None:
+                return e.bounds.center_x, e.bounds.center_y
+        return None
+
+    p1 = _to_xy(src); p2 = _to_xy(dst)
+    if p1 is None or p2 is None:
+        return error_dict(Code.BAD_REQUEST,
+                          "drag requires from/to as {x,y} or {selector|element_id}",
+                          step_id=step_id)
+    duration = float(args.get("duration_s", 0.5))
+    path = [p1, ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2), p2]
+    try:
+        import pyautogui
+        for k in modifiers:
+            pyautogui.keyDown(k)
+        try:
+            pyautogui.moveTo(*p1)
+            pyautogui.dragTo(*p2, duration=duration, button="left")
+        finally:
+            for k in modifiers:
+                pyautogui.keyUp(k)
+        ok = True
+        err = None
+    except Exception as e:
+        ok = False; err = str(e)
+    out = {"ok": ok, "success": ok, "action": "drag",
+           "step_id": step_id, "caused_by_step_id": step_id,
+           "from": list(p1), "to": list(p2),
+           "modifiers": modifiers, "path": [list(p) for p in path]}
+    if err:
+        out["error"] = {"code": Code.INTERNAL, "message": err,
+                        "recoverable": False, "suggested_next_tool": None,
+                        "context": {}}
+    return out
+
+
+def key_into_element(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    keys = args.get("keys", "")
+    def _exec(elem: UIElement, info: WindowInfo, _a: Dict[str, Any]
+              ) -> Dict[str, Any]:
+        ctx.observer.perform_action(
+            "click_at",
+            element_id=elem.element_id,
+            value={"x": elem.bounds.center_x, "y": elem.bounds.center_y,
+                   "button": "left", "double": False},
+            hwnd=info.handle,
+        )
+        return ctx.observer.perform_action("key", value=keys, hwnd=info.handle)
+    return _do_element_action(ctx, action_name="key_into_element",
+                              args=args, executor=_exec)
+
+
+def clear_text(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _exec(elem: UIElement, info: WindowInfo, _a: Dict[str, Any]
+              ) -> Dict[str, Any]:
+        ctx.observer.perform_action(
+            "click_at",
+            element_id=elem.element_id,
+            value={"x": elem.bounds.center_x, "y": elem.bounds.center_y,
+                   "button": "left", "double": False},
+            hwnd=info.handle,
+        )
+        ctx.observer.perform_action("key", value="ctrl+a", hwnd=info.handle)
+        return ctx.observer.perform_action("key", value="delete",
+                                            hwnd=info.handle)
+    return _do_element_action(ctx, action_name="clear_text",
+                              args=args, executor=_exec)
+
+
+REGISTRY.update({
+    "hover_at":              hover_at,
+    "hover_element":         hover_element,
+    "right_click_at":        right_click_at,
+    "right_click_element":   right_click_element,
+    "double_click_at":       double_click_at,
+    "double_click_element":  double_click_element,
+    "drag":                  drag,
+    "key_into_element":      key_into_element,
+    "clear_text":            clear_text,
+})
+
+
 _ALLOWLIST_TOOLS = {
     "get_capabilities", "get_monitors", "get_budget_status",
     "get_redaction_status", "trace_status", "replay_status",
