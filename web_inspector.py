@@ -485,16 +485,15 @@ async function loadScreenshot() {
   setStatus('CAPTURING…');
   try {
     const idx = selectedIndex !== null ? `?window_index=${selectedIndex}` : '';
-    const [data, areas] = await Promise.all([
-      apiFetch(`/api/full_screenshot${idx}`),
+    const [shotData, areas] = await Promise.all([
+      apiFetch(`/api/screenshot${idx}`),
       selectedIndex !== null ? apiFetch(`/api/visible_areas?window_index=${selectedIndex}`).catch(() => null) : Promise.resolve(null),
     ]);
-    if (data.error) { panel.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; return; }
+    if (shotData.error) { panel.innerHTML = `<pre style="color:var(--red)">${esc(shotData.error)}</pre>`; return; }
 
-    const dimMeta = data.width ? ` · ${data.width}×${data.height}px` : '';
     let html = `<div id="screenshot-panel">
-      <span class="shot-meta">WINDOW: ${esc(data.window)}${dimMeta}</span>
-      <img src="data:image/png;base64,${data.data}" alt="screenshot"/>`;
+      <span class="shot-meta">WINDOW: ${esc(shotData.window)}</span>
+      <img src="data:image/png;base64,${shotData.data}" alt="screenshot"/>`;
 
     if (areas && areas.visible_regions) {
       const regs = areas.visible_regions;
@@ -502,15 +501,40 @@ async function loadScreenshot() {
       html += `<pre style="font-size:10px;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:8px 12px">${esc(JSON.stringify(regs, null, 2))}</pre>`;
     }
 
-    if (data.sketch) {
-      html += `<div class="desc-label" style="margin-top:14px">ASCII SKETCH</div>`;
-      html += `<pre style="font-size:10px;line-height:1.3;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:12px 16px;overflow-x:auto">${esc(data.sketch)}</pre>`;
-    }
-
-    html += `</div>`;
+    html += `<div class="desc-label" style="margin-top:14px">FULL DISPLAY</div>
+      <button class="action-btn" id="load-full-display-btn" onclick="loadFullDisplay()">CAPTURE ALL MONITORS</button>
+      <div id="full-display-content"></div>
+    </div>`;
     panel.innerHTML = html;
     setStatus('READY');
   } catch(e) { panel.innerHTML = `<pre style="color:var(--red)">${esc(String(e))}</pre>`; setStatus('ERROR'); }
+}
+
+async function loadFullDisplay() {
+  const btn = document.getElementById('load-full-display-btn');
+  const container = document.getElementById('full-display-content');
+  if (btn) btn.disabled = true;
+  if (container) container.innerHTML = spinner();
+  setStatus('CAPTURING ALL MONITORS…');
+  try {
+    const idx = selectedIndex !== null ? `?window_index=${selectedIndex}` : '';
+    const data = await apiFetch(`/api/full_screenshot${idx}`);
+    if (data.error) { container.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; return; }
+    const dimMeta = data.width ? ` · ${data.width}×${data.height}px` : '';
+    let html = `<span class="shot-meta" style="margin-top:8px;display:block">ALL MONITORS${dimMeta}</span>
+      <img src="data:image/png;base64,${data.data}" alt="full display screenshot" style="max-width:100%"/>`;
+    if (data.sketch) {
+      html += `<div class="desc-label" style="margin-top:14px">ASCII SKETCH (selected window)</div>`;
+      html += `<pre style="font-size:10px;line-height:1.3;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:12px 16px;overflow-x:auto">${esc(data.sketch)}</pre>`;
+    }
+    if (container) container.innerHTML = html;
+    setStatus('READY');
+  } catch(e) {
+    if (container) container.innerHTML = `<pre style="color:var(--red)">${esc(String(e))}</pre>`;
+    setStatus('ERROR');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -787,13 +811,40 @@ def create_web_app(
             if tree is not None:
                 gw  = request.args.get("grid_width",  type=int)
                 gh  = request.args.get("grid_height", type=int)
-                ref = info.bounds if info else observer._get_screen_bounds()
+                ref = info.bounds if info else observer.get_screen_bounds()
+                # Crop the full-display PNG to the window's bounds so that OCR
+                # word coordinates (which are window-relative in ascii_renderer)
+                # align correctly with the sketch grid.
+                ocr_bytes = shot
+                if info is not None:
+                    try:
+                        import io as _io2
+                        from PIL import Image as _Image2
+                        full_img = _Image2.open(_io2.BytesIO(shot))
+                        screen_b = observer.get_screen_bounds()
+                        crop_box = (
+                            info.bounds.x - screen_b.x,
+                            info.bounds.y - screen_b.y,
+                            info.bounds.right - screen_b.x,
+                            info.bounds.bottom - screen_b.y,
+                        )
+                        crop_box = (
+                            max(0, crop_box[0]),
+                            max(0, crop_box[1]),
+                            min(full_img.width,  crop_box[2]),
+                            min(full_img.height, crop_box[3]),
+                        )
+                        buf2 = _io2.BytesIO()
+                        full_img.crop(crop_box).save(buf2, format="PNG")
+                        ocr_bytes = buf2.getvalue()
+                    except Exception:
+                        pass
                 sketch = renderer.render(
                     root             = tree,
                     screen_bounds    = ref,
                     grid_width       = gw,
                     grid_height      = gh,
-                    screenshot_bytes = shot,
+                    screenshot_bytes = ocr_bytes,
                 )
 
             try:
@@ -805,13 +856,14 @@ def create_web_app(
                 img_w = img_h = None
 
             return jsonify({
-                "window":   info.title if info else "(full screen)",
-                "format":   "png",
-                "encoding": "base64",
-                "width":    img_w,
-                "height":   img_h,
-                "data":     base64.b64encode(shot).decode(),
-                "sketch":   sketch,
+                "window":          info.title if info else "(full screen)",
+                "screenshot_scope": "full_display",
+                "format":          "png",
+                "encoding":        "base64",
+                "width":           img_w,
+                "height":          img_h,
+                "data":            base64.b64encode(shot).decode(),
+                "sketch":          sketch,
             })
         except Exception as e:
             print(f"[web_inspector:/api/full_screenshot] {e}")

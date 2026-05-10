@@ -209,11 +209,16 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         result = api_full_screenshot(rest, wi, args.get("grid_width"), args.get("grid_height"))
         if "data" in result:
             result = {k: v for k, v in result.items() if k != "data"}
-            result["note"] = "Screenshot captured (base64 data omitted). Sketch included above."
+            note = "Screenshot captured (base64 data omitted)."
+            if result.get("sketch"):
+                note += " Sketch included above."
+            result["note"] = note
         return result
 
     elif tool_name == "get_visible_areas":
-        return api_visible_areas(rest, wi if wi is not None else 0)
+        if wi is None:
+            return {"error": "get_visible_areas requires a selected window (window_index)"}
+        return api_visible_areas(rest, wi)
 
     elif tool_name == "click_at":
         payload = {
@@ -429,7 +434,7 @@ SCREEN_TOOLS: List[Dict] = [
             "name": "scroll",
             "description": (
                 "Scroll the mouse wheel at a given screen position. "
-                "Positive clicks scrolls up/forward; negative scrolls down/backward."
+                "Positive clicks scroll up/forward; negative clicks scroll down/backward."
             ),
             "parameters": {
                 "type": "object",
@@ -841,8 +846,11 @@ def main() -> None:
     if models:
         print(_c(f" OK  ({len(models)} model(s) available)", "green"))
         model = pick_model(models)
-    else:
+    elif err:
         print(_c(f" failed — {err}", "yellow"))
+        model = prompt("  Model name", "llama3.2:3b")
+    else:
+        print(_c(" connected, but no models found", "yellow"))
         model = prompt("  Model name", "llama3.2:3b")
 
     llm = LLMClient(llm_base, api_key, model)

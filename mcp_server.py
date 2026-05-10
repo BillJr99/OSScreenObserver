@@ -202,10 +202,11 @@ _TOOLS: List[Dict] = [
     {
         "name": "get_full_screenshot",
         "description": (
-            "Capture a screenshot of a window and render its accessibility element tree "
-            "as an ASCII spatial sketch in a single call. The sketch automatically uses "
-            "OCR overlay to fill in visible text. "
-            "Returns: window title, PNG as base64, image pixel dimensions, and the sketch string."
+            "Capture a screenshot of the entire virtual desktop (all monitors combined) "
+            "and optionally render the accessibility element tree of a window as an ASCII "
+            "spatial sketch with OCR overlay. "
+            "Returns: window title, screenshot_scope='full_display', PNG as base64, "
+            "image pixel dimensions, and the sketch string."
         ),
         "inputSchema": {
             "type": "object",
@@ -468,13 +469,32 @@ class MCPServer:
         sketch = None
         tree = self.observer.get_element_tree(hwnd) if hwnd is not None else None
         if tree is not None:
-            ref = info.bounds if info else self.observer._get_screen_bounds()
+            ref = info.bounds if info else self.observer.get_screen_bounds()
+            # Crop the full-display PNG to window bounds for accurate OCR overlay.
+            ocr_bytes = shot
+            if info is not None:
+                try:
+                    import io as _io2
+                    from PIL import Image as _Image2
+                    full_img = _Image2.open(_io2.BytesIO(shot))
+                    screen_b = self.observer.get_screen_bounds()
+                    crop_box = (
+                        max(0, info.bounds.x - screen_b.x),
+                        max(0, info.bounds.y - screen_b.y),
+                        min(full_img.width,  info.bounds.right  - screen_b.x),
+                        min(full_img.height, info.bounds.bottom - screen_b.y),
+                    )
+                    buf2 = _io2.BytesIO()
+                    full_img.crop(crop_box).save(buf2, format="PNG")
+                    ocr_bytes = buf2.getvalue()
+                except Exception:
+                    pass
             sketch = self.renderer.render(
                 root             = tree,
                 screen_bounds    = ref,
                 grid_width       = args.get("grid_width"),
                 grid_height      = args.get("grid_height"),
-                screenshot_bytes = shot,
+                screenshot_bytes = ocr_bytes,
             )
 
         img_w = img_h = None
@@ -487,13 +507,14 @@ class MCPServer:
             pass
 
         return {
-            "window":   info.title if info else "(full screen)",
-            "format":   "png",
-            "encoding": "base64",
-            "width":    img_w,
-            "height":   img_h,
-            "data":     base64.b64encode(shot).decode(),
-            "sketch":   sketch,
+            "window":           info.title if info else "(full screen)",
+            "screenshot_scope": "full_display",
+            "format":           "png",
+            "encoding":         "base64",
+            "width":            img_w,
+            "height":           img_h,
+            "data":             base64.b64encode(shot).decode(),
+            "sketch":           sketch,
         }
 
     def _t_visible_areas(self, hwnd, info, windows) -> Dict:
