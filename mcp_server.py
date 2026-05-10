@@ -200,12 +200,38 @@ _TOOLS: List[Dict] = [
         },
     },
     {
+        "name": "scroll",
+        "description": (
+            "Scroll the mouse wheel at an optional screen position. "
+            "Positive clicks scroll up/forward; negative clicks scroll down/backward."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "clicks": {
+                    "type": "integer",
+                    "description": "Scroll amount (positive = up, negative = down). Default: 3.",
+                },
+                "x": {
+                    "type": "integer",
+                    "description": "Screen X coordinate to scroll at (optional).",
+                },
+                "y": {
+                    "type": "integer",
+                    "description": "Screen Y coordinate to scroll at (optional).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_full_screenshot",
         "description": (
-            "Capture a screenshot of a window and render its accessibility element tree "
-            "as an ASCII spatial sketch in a single call. The sketch automatically uses "
-            "OCR overlay to fill in visible text. "
-            "Returns: window title, PNG as base64, image pixel dimensions, and the sketch string."
+            "Capture a screenshot of the entire virtual desktop (all monitors combined) "
+            "and optionally render the accessibility element tree of a window as an ASCII "
+            "spatial sketch with OCR overlay. "
+            "Returns: window title, screenshot_scope='full_display', PNG as base64, "
+            "image pixel dimensions, and the sketch string."
         ),
         "inputSchema": {
             "type": "object",
@@ -241,6 +267,26 @@ _TOOLS: List[Dict] = [
                 "window_index": {
                     "type": "integer",
                     "description": "Window index from list_windows.",
+                },
+            },
+            "required": ["window_index"],
+        },
+    },
+    {
+        "name": "bring_to_foreground",
+        "description": (
+            "Bring a window to the foreground by clicking in its title-bar area. "
+            "The tool computes the visible (non-occluded) region of the window, "
+            "then clicks near the top-centre of that region (typically the title bar) "
+            "to raise it above other windows. "
+            "Returns the click coordinates and success status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_index": {
+                    "type": "integer",
+                    "description": "Window index from list_windows (required).",
                 },
             },
             "required": ["window_index"],
@@ -370,11 +416,17 @@ class MCPServer:
             elif name == "press_key":
                 return self.observer.perform_action("key", value=args.get("keys", ""))
 
+            elif name == "scroll":
+                return self.observer.perform_action("scroll", value=args)
+
             elif name == "get_full_screenshot":
                 return self._t_full_screenshot(hwnd, info, args)
 
             elif name == "get_visible_areas":
                 return self._t_visible_areas(hwnd, info, windows)
+
+            elif name == "bring_to_foreground":
+                return self._t_bring_to_foreground(hwnd, info, windows)
 
             else:
                 return {"error": f"Unknown tool: {name}"}
@@ -468,13 +520,32 @@ class MCPServer:
         sketch = None
         tree = self.observer.get_element_tree(hwnd) if hwnd is not None else None
         if tree is not None:
-            ref = info.bounds if info else self.observer._get_screen_bounds()
+            ref = info.bounds if info else self.observer.get_screen_bounds()
+            # Crop the full-display PNG to window bounds for accurate OCR overlay.
+            ocr_bytes = shot
+            if info is not None:
+                try:
+                    import io as _io2
+                    from PIL import Image as _Image2
+                    full_img = _Image2.open(_io2.BytesIO(shot))
+                    screen_b = self.observer.get_screen_bounds()
+                    crop_box = (
+                        max(0, info.bounds.x - screen_b.x),
+                        max(0, info.bounds.y - screen_b.y),
+                        min(full_img.width,  info.bounds.right  - screen_b.x),
+                        min(full_img.height, info.bounds.bottom - screen_b.y),
+                    )
+                    buf2 = _io2.BytesIO()
+                    full_img.crop(crop_box).save(buf2, format="PNG")
+                    ocr_bytes = buf2.getvalue()
+                except Exception:
+                    pass
             sketch = self.renderer.render(
                 root             = tree,
                 screen_bounds    = ref,
                 grid_width       = args.get("grid_width"),
                 grid_height      = args.get("grid_height"),
-                screenshot_bytes = shot,
+                screenshot_bytes = ocr_bytes,
             )
 
         img_w = img_h = None
@@ -487,13 +558,14 @@ class MCPServer:
             pass
 
         return {
-            "window":   info.title if info else "(full screen)",
-            "format":   "png",
-            "encoding": "base64",
-            "width":    img_w,
-            "height":   img_h,
-            "data":     base64.b64encode(shot).decode(),
-            "sketch":   sketch,
+            "window":           info.title if info else "(full screen)",
+            "screenshot_scope": "full_display",
+            "format":           "png",
+            "encoding":         "base64",
+            "width":            img_w,
+            "height":           img_h,
+            "data":             base64.b64encode(shot).decode(),
+            "sketch":           sketch,
         }
 
     def _t_visible_areas(self, hwnd, info, windows) -> Dict:
@@ -504,6 +576,14 @@ class MCPServer:
             "window":          info.title if info else "(unknown)",
             "visible_regions": areas,
         }
+
+    def _t_bring_to_foreground(self, hwnd, info, windows) -> Dict:
+        if hwnd is None:
+            return {"success": False,
+                    "error": "window_index is required for bring_to_foreground"}
+        result = self.observer.bring_to_foreground(hwnd, windows)
+        result["window"] = info.title if info else "(unknown)"
+        return result
 
     def _t_click_at(self, args) -> Dict:
         return self.observer.perform_action(

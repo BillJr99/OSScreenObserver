@@ -121,6 +121,9 @@ class WindowInfo:
 class MockAdapter:
     """Synthetic data adapter for development and testing."""
 
+    def get_windows_above_bounds(self, hwnd) -> List["Bounds"]:
+        return []  # Mock assumes the target window is on top
+
     def list_windows(self) -> List[WindowInfo]:
         return [
             WindowInfo(1001, "Untitled — Notepad", "notepad.exe", 1234,
@@ -286,6 +289,32 @@ class WindowsAdapter:
         except Exception as e:
             print(f"[WindowsAdapter:list_windows] {e}")
             traceback.print_exc()
+            return []
+
+    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:
+        """Return bounds of visible windows that are above hwnd in Z-order."""
+        try:
+            import win32gui
+            GW_HWNDNEXT = 2
+            above: List[Bounds] = []
+            h = win32gui.GetTopWindow(None)
+            while h and h != hwnd:
+                try:
+                    if win32gui.IsWindowVisible(h):
+                        rect = win32gui.GetWindowRect(h)
+                        w = rect[2] - rect[0]
+                        hh = rect[3] - rect[1]
+                        if w > 0 and hh > 0:
+                            above.append(Bounds(rect[0], rect[1], w, hh))
+                except Exception:
+                    pass
+                try:
+                    h = win32gui.GetWindow(h, GW_HWNDNEXT)
+                except Exception:
+                    break
+            return above
+        except Exception as e:
+            logger.debug(f"[WindowsAdapter:get_windows_above_bounds] {e}")
             return []
 
     def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
@@ -471,6 +500,9 @@ class MacOSAdapter:
         self.config = config
         logger.info("[MacOSAdapter:__init__] macOS adapter loaded (AX tree is stub)")
 
+    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:
+        return []  # Z-order unavailable without Quartz CGWindowList
+
     def list_windows(self) -> List[WindowInfo]:
         try:
             import subprocess
@@ -531,6 +563,9 @@ class LinuxAdapter:
     def __init__(self, config: dict):
         self.config = config
         logger.info("[LinuxAdapter:__init__] Linux adapter loaded (AT-SPI tree is stub)")
+
+    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:
+        return []  # Z-order unavailable without Xlib/wnck
 
     def list_windows(self) -> List[WindowInfo]:
         try:
@@ -674,7 +709,7 @@ class ScreenObserver:
 
     # ── Visibility helpers ────────────────────────────────────────────────────
 
-    def _get_screen_bounds(self) -> Bounds:
+    def get_screen_bounds(self) -> Bounds:
         """Return the bounding rect of the combined virtual screen (all monitors)."""
         try:
             import mss
@@ -689,30 +724,68 @@ class ScreenObserver:
         """
         Return a list of {x, y, width, height} dicts for the portions of the
         window identified by *target_hwnd* that are on-screen and not covered
-        by any other window in *all_windows*.
+        by windows above it in Z-order.
 
-        The method is conservative: every other window is treated as a
-        potential occluder regardless of z-order.  Windows entirely behind
-        the target are rare in practice (focused window is typically on top),
-        so this gives a good approximation on all platforms without needing
-        platform-specific z-order APIs.
+        On Windows the Z-order is queried precisely via win32gui.
+        On macOS/Linux Z-order is unavailable, so the full clipped-to-screen
+        bounds are returned (assuming the window is on top).
         """
         target = next((w for w in all_windows if w.handle == target_hwnd), None)
         if target is None:
             return []
 
-        screen   = self._get_screen_bounds()
+        screen   = self.get_screen_bounds()
         clipped  = _intersect_bounds(target.bounds, screen)
         if not clipped:
             return []
 
         visible: List[Bounds] = [clipped]
-        for w in all_windows:
-            if w.handle == target_hwnd:
-                continue
-            visible = _subtract_rect(visible, w.bounds)
+        occluders = self._adapter.get_windows_above_bounds(target_hwnd)
+        for occ in occluders:
+            visible = _subtract_rect(visible, occ)
 
         return [b.to_dict() for b in visible]
+
+    def bring_to_foreground(self, target_hwnd: Any,
+                            all_windows: List[WindowInfo]) -> Dict:
+        """
+        Bring a window to the foreground by clicking in its title-bar area.
+
+        Strategy
+        --------
+        1. Compute the visible regions of the window (non-occluded, on-screen).
+        2. From the first (largest) visible region pick a point near the top
+           centre — ideally inside the title bar (~20 px below the top edge).
+        3. Dispatch a left-click at that point via perform_action.
+
+        Returns the click result dict, or an error dict if no visible area
+        could be found.
+        """
+        regions = self.get_visible_areas(target_hwnd, all_windows)
+        if not regions:
+            # Fall back to the raw window bounds clipped to screen
+            target = next((w for w in all_windows if w.handle == target_hwnd), None)
+            if target is None:
+                return {"success": False, "error": "Window not found"}
+            screen = self.get_screen_bounds()
+            clipped = _intersect_bounds(target.bounds, screen)
+            if not clipped:
+                return {"success": False,
+                        "error": "Window is entirely off-screen or hidden"}
+            regions = [clipped.to_dict()]
+
+        r = regions[0]
+        click_x = r["x"] + r["width"] // 2
+        # Aim ~20 px below the top edge (title bar); clamp inside the region.
+        title_bar_offset = min(20, max(1, r["height"] // 4))
+        click_y = r["y"] + title_bar_offset
+
+        result = self.perform_action("click_at",
+                                     value={"x": click_x, "y": click_y,
+                                            "button": "left", "double": False})
+        result["clicked_x"] = click_x
+        result["clicked_y"] = click_y
+        return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
