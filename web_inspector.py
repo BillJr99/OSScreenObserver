@@ -334,9 +334,9 @@ details > summary::-webkit-details-marker { display: none; }
             <h3>BRING WINDOW TO FOREGROUND</h3>
             <div class="action-row">
               <span style="color:var(--text-dim);font-size:11px;font-family:var(--mono)">Clicks the title bar of the selected window to raise it.</span>
-              <button class="action-btn" onclick="doBringToForeground()">BRING TO FRONT</button>
+              <button class="action-btn" onclick="doBringToForeground('bring-result-actions')">BRING TO FRONT</button>
             </div>
-            <div class="action-result" id="bring-result"></div>
+            <div class="action-result" id="bring-result-actions"></div>
           </div>
         </div>
       </div>
@@ -507,8 +507,8 @@ async function loadScreenshot() {
       const regs = areas.visible_regions;
       html += `<div class="desc-label" style="margin-top:14px">VISIBLE AREAS (${regs.length} region${regs.length !== 1 ? 's' : ''})</div>`;
       html += `<pre style="font-size:10px;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:8px 12px">${esc(JSON.stringify(regs, null, 2))}</pre>`;
-      html += `<button class="action-btn" style="margin-top:8px" onclick="doBringToForeground()">BRING TO FRONT</button>`;
-      html += `<div class="action-result" id="bring-result"></div>`;
+      html += `<button class="action-btn" style="margin-top:8px" onclick="doBringToForeground('bring-result-shot')">BRING TO FRONT</button>`;
+      html += `<div class="action-result" id="bring-result-shot"></div>`;
     }
 
     html += `<div class="desc-label" style="margin-top:14px">FULL DISPLAY</div>
@@ -529,7 +529,7 @@ async function loadFullDisplay() {
   try {
     const idx = selectedIndex !== null ? `?window_index=${selectedIndex}` : '';
     const data = await apiFetch(`/api/full_screenshot${idx}`);
-    if (data.error) { container.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; return; }
+    if (data.error) { if (container) container.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; setStatus('ERROR'); return; }
     const dimMeta = data.width ? ` · ${data.width}×${data.height}px` : '';
     let html = `<span class="shot-meta" style="margin-top:8px;display:block">ALL MONITORS${dimMeta}</span>
       <img src="data:image/png;base64,${data.data}" alt="full display screenshot" style="max-width:100%"/>`;
@@ -588,24 +588,25 @@ function doKey() {
   postAction({action:'key', value: keys}, 'key-result');
 }
 
-async function doBringToForeground() {
-  const el = document.getElementById('bring-result');
-  el.classList.remove('visible', 'error');
+async function doBringToForeground(resultId) {
+  const el = document.getElementById(resultId);
+  if (el) el.classList.remove('visible', 'error');
   if (selectedIndex === null) {
-    el.textContent = 'No window selected — pick one from the sidebar first.';
-    el.classList.add('visible', 'error');
+    if (el) { el.textContent = 'No window selected — pick one from the sidebar first.'; el.classList.add('visible', 'error'); }
+    setStatus('NO WINDOW SELECTED');
     return;
   }
   setStatus('BRINGING TO FOREGROUND…');
   try {
     const data = await apiFetch(`/api/bring_to_foreground?window_index=${selectedIndex}`);
-    el.textContent = JSON.stringify(data);
-    el.classList.add('visible');
-    el.classList.toggle('error', data.success === false);
+    if (el) {
+      el.textContent = JSON.stringify(data);
+      el.classList.add('visible');
+      el.classList.toggle('error', data.success === false);
+    }
     setStatus(data.success !== false ? 'ACTION OK' : 'ACTION FAILED');
   } catch(e) {
-    el.textContent = String(e);
-    el.classList.add('visible', 'error');
+    if (el) { el.textContent = String(e); el.classList.add('visible', 'error'); }
     setStatus('ERROR');
   }
 }

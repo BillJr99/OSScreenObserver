@@ -754,31 +754,41 @@ class ScreenObserver:
         Strategy
         --------
         1. Compute the visible regions of the window (non-occluded, on-screen).
-        2. From the first (largest) visible region pick a point near the top
-           centre — ideally inside the title bar (~20 px below the top edge).
-        3. Dispatch a left-click at that point via perform_action.
+           On Windows this uses real Z-order; on macOS/Linux the window is
+           assumed to be on top so the screen-clipped bounds are returned.
+        2. Pick the top-most region (lowest y-value) — that is where the title
+           bar lives. If multiple regions share the same top edge, prefer the
+           widest one.
+        3. Click near the top-centre of that region (~20 px below the top edge,
+           clamped to stay strictly inside the region).
 
-        Returns the click result dict, or an error dict if no visible area
-        could be found.
+        Returns the click result dict, or an error dict when no visible area
+        exists (window fully off-screen or, on Windows, fully occluded).
         """
         regions = self.get_visible_areas(target_hwnd, all_windows)
         if not regions:
-            # Fall back to the raw window bounds clipped to screen
+            # On Windows "no regions" means fully occluded; clicking the raw
+            # bounds would hit the covering window instead.  On macOS/Linux the
+            # platform adapter returns no occluders, so an empty result means
+            # the window is off-screen.  In both cases refuse the click.
             target = next((w for w in all_windows if w.handle == target_hwnd), None)
             if target is None:
                 return {"success": False, "error": "Window not found"}
-            screen = self.get_screen_bounds()
-            clipped = _intersect_bounds(target.bounds, screen)
-            if not clipped:
-                return {"success": False,
-                        "error": "Window is entirely off-screen or hidden"}
-            regions = [clipped.to_dict()]
+            return {"success": False,
+                    "error": "Window has no visible area (fully off-screen or occluded)"}
 
-        r = regions[0]
-        click_x = r["x"] + r["width"] // 2
-        # Aim ~20 px below the top edge (title bar); clamp inside the region.
-        title_bar_offset = min(20, max(1, r["height"] // 4))
-        click_y = r["y"] + title_bar_offset
+        # Pick the top-most region (title bar is near the top of the window).
+        # Break ties by width so we prefer the widest strip at that y-level.
+        best = min(regions, key=lambda r: (r["y"], -r["width"]))
+
+        # Click near the top-centre; offset ~20 px down (title bar height).
+        # Keep both coordinates strictly inside the region bounds.
+        title_bar_offset = min(20, max(1, (best["height"] - 1) // 2))
+        click_x = best["x"] + best["width"] // 2
+        click_y = best["y"] + title_bar_offset
+        # Clamp to region interior [x, x+width-1] × [y, y+height-1]
+        click_x = max(best["x"], min(best["x"] + best["width"]  - 1, click_x))
+        click_y = max(best["y"], min(best["y"] + best["height"] - 1, click_y))
 
         result = self.perform_action("click_at",
                                      value={"x": click_x, "y": click_y,
