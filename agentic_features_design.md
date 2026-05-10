@@ -1,458 +1,547 @@
-# OSScreenObserver — Agentic LLM & Harness Feature Design
+# OSScreenObserver — Agentic LLM & Harness Feature Design (v2)
 
-Status: **Draft / planning only.** No code in this branch implements the features
-below; this document is the blueprint.
+Status: **Locked, implementation-ready.** Every open question from v1 has a
+decision; every new tool has a request/response schema; every config key has a
+default; every error code has a recovery hint.
 
-Audience: maintainers of OSScreenObserver, authors of agent harnesses that
-target it, and reviewers deciding what to build next.
+Audience: implementers (this doc drives `claude/plan-agentic-llm-features-82sCL`),
+authors of agent harnesses targeting OSScreenObserver, and reviewers.
 
 Companion to: `README.md` (user-facing), `screen_observer_api_reference.md`
-(current REST + MCP surface).
+(updated alongside the implementation).
 
 ---
 
 ## 1. Goals
 
-1. Make the system **reliable enough for agentic loops** — every action returns
-   enough signal that the LLM can decide what to do next without guessing.
-2. Make the system **cheap enough for long sessions** — diffs, crops, and
-   filters keep token spend bounded as the trajectory grows.
-3. Make the system **a first-class evaluation substrate** — record/replay,
-   scripted mock scenarios, and declarative oracles let harnesses score agents
-   reproducibly.
-4. Keep the **two-interface invariant**: every new capability is exposed
-   simultaneously through the REST API (`web_inspector.py`) and the MCP server
-   (`mcp_server.py`), backed by shared logic on `ScreenObserver` /
-   `DescriptionGenerator` / `ASCIIRenderer`.
+1. **Reliable agentic loops.** Every action returns enough signal that the LLM
+   can decide what to do next without guessing.
+2. **Cheap long sessions.** Diffs, crops, and filters keep token spend bounded
+   as the trajectory grows.
+3. **First-class evaluation substrate.** Record/replay, scripted mock
+   scenarios, and declarative oracles let harnesses score agents reproducibly.
+4. **Two-interface invariant.** Every new capability lands simultaneously on
+   the REST API (`web_inspector.py`) and the MCP server (`mcp_server.py`),
+   backed by shared logic.
+5. **Backwards compatible.** Existing tools and response shapes keep working.
+   New fields are additive.
 
 ## 2. Non-goals
 
 - Cross-machine remoting, sandboxing, or container orchestration.
-- A new agent runtime. `window_agent.py` stays a reference client; production
-  harnesses bring their own loop.
-- Replacing UIA / AX / AT-SPI with a custom inspector. We layer on top.
-- Web-app DOM access. Browser windows are observed through the OS
-  accessibility tree only.
+- Replacing UIA / AX / AT-SPI with a custom inspector.
+- Web-app DOM access. Browser windows are observed through OS accessibility.
+- A new agent runtime. `window_agent.py` stays a reference client.
 
-## 3. Design principles
+## 3. Locked decisions
 
-- **Two interfaces, one core.** Every feature lands as a method on
-  `ScreenObserver` (or a new sibling class) and is wired into both
-  `mcp_server.py`'s `_TOOLS` table and `web_inspector.py`'s Flask routes.
-- **Stable IDs over positional indexes.** Positional `window_index` and
-  per-call `id` integers stay for backwards compat, but every new tool also
-  accepts a stable `window_uid` and `element_selector`.
-- **Diffs over snapshots.** Anything that returns a tree, OCR text, or visible
-  regions accepts a `since=<token>` and may return a delta.
-- **Receipts on every action.** Every input tool returns a structured
-  `ActionReceipt` — never just `{"success": true}`.
-- **Errors are data.** A typed error taxonomy with `recoverable` and
-  `suggested_next_tool` so agents can branch programmatically.
-- **Mock parity.** Every new feature works under `--mock`. If it can't, it
-  isn't shipped.
+| ID | Question | Decision |
+|---|---|---|
+| D1 | Implementation scope | All six phases, production-grade. Tests + GitHub Actions CI. |
+| D2 | Session model | **Single global session.** REST and MCP share one in-memory state object. |
+| D3 | Selector grammar | **Both XPath-ish and CSS-ish, share AST.** Parser auto-detects from the leading character. XPath default in docs. |
+| D4 | Diff format | **Both, custom default.** Server emits the custom shape; pass `format="json-patch"` to get RFC 6902 instead. |
+| D5 | Legacy `success` field | **Emit both.** New endpoints add `ok` and `error.code`; legacy endpoints add the new fields alongside today's `success` / `error` string. |
+| D6 | Replay non-determinism | **Per-tool comparison rules table** (§15.4). Unrecorded fields are ignored. |
+| D7 | Redaction depth | **Opt-in image blur.** Default = tree+OCR text + VLM preamble. `redaction.blur_screenshots: true` enables PIL blur. |
+| D8 | Scenario DSL | **YAML.** Adds PyYAML dep. State-machine reactions are pattern-matched. |
+| D9 | Confirmation token binding | **`(window_uid, selector, bbox)` with ±20 px tolerance.** |
+| D10 | Trace screenshots | **Full screen + per-window thumbnail** at the cadence. |
+| D11 | Cross-platform | **All three platforms first-class.** Real macOS `pyobjc` and Linux `pyatspi` AX adapters. Per-platform occlusion testing. |
+| D12 | Tests / CI | Unit + mock-mode integration tests under `tests/`, plus `.github/workflows/ci.yml` running pytest + ruff. No Docker/Xvfb in CI. |
+| D13 | "Changed" hash | Tree hash excludes `focused` and absolute timestamps; **includes** bounds, name, value, role, enabled. Drift in any of the latter is meaningful change. |
+| D14 | `ElementOccluded` | Implemented on Windows via Z-order; on macOS via `CGWindowListCopyWindowInfo` Z-order; on Linux via `_NET_CLIENT_LIST_STACKING` (X11) — falls back to "assumed visible" when unavailable. |
+| D15 | `wait_for` cost | Polling. Per-call `poll_ms` (default 200, min 50). Server enforces a max total wait (`wait_for.max_timeout_ms`, default 60_000). |
+| D16 | Trace storage | `traces/<trace_id>/trace.jsonl` + `traces/<trace_id>/screenshots/step-NNNNN-full.png` + `…-window.png`. |
+| D17 | Audit log redaction | Separate config block (`audit.redact_arg_keys`, default includes `text` for `type_text` and `value` for `set_value`). |
 
-## 4. Glossary
+## 4. Design principles
+
+- **Two interfaces, one core.** Logic lives on `ScreenObserver` or new sibling
+  modules. Both `mcp_server.py` and `web_inspector.py` are thin wrappers.
+- **Stable IDs over positional indexes.** `window_uid` and `element_selector`
+  are the new primary keys. `window_index` and integer `id` stay as legacy.
+- **Diffs over snapshots.** Anything tree-shaped accepts `since=<token>`.
+- **Receipts on every action.** Every input tool returns an `ActionReceipt`.
+- **Errors are data.** A typed taxonomy with `recoverable` and
+  `suggested_next_tool` so agents branch programmatically.
+- **Mock parity.** Every new feature works under `--mock`. If it doesn't,
+  it isn't shipped.
+
+## 5. Glossary
 
 | Term | Definition |
 |---|---|
-| `window_uid` | Stable opaque string identifying a window across calls; on Windows derived from `(pid, hwnd)`, on macOS from `kCGWindowNumber`, on Linux from `wmctrl` window id. Survives focus changes; invalidated when the window closes. |
-| `element_selector` | String of the form `role[name="…"]/role[name="…"]/…` — an ancestry path through the accessibility tree, robust to id renumbering. |
-| `tree_token` | Opaque cursor returned by any tree-producing tool; pass it back via `since=` to get only what changed. |
-| `snapshot_id` | Server-side handle pointing to a frozen `(window list, tree, screenshot, OCR text, timestamp)` tuple. |
-| `step_id` | Monotonic per-session integer assigned to every tool call; appears on every result. |
-| `trace` | JSONL stream of `(step_id, tool, args, result_summary, screenshot_ref?)` rows. |
-| `scenario` | A YAML/JSON file consumed by mock mode that scripts initial state plus reactions to actions. |
-| `ActionReceipt` | Structured response from any input tool — see §6. |
+| `window_uid` | Stable opaque string identifying a window; `win:{pid}:{hwnd}`, `mac:{cg_window_number}`, `x11:{wmctrl_id}`, or `mock:{idx}:{nonce}`. Persists until window closes. |
+| `element_selector` | XPath-ish or CSS-ish ancestry path through the accessibility tree. See §6.2. |
+| `tree_token` | Opaque cursor returned by any tree-producing tool; pass back via `since=` for a diff. TTL 5 min, ring buffer of 16 per window. |
+| `snapshot_id` | Server-side handle pointing to a frozen `(windows, trees, screenshots, ocr, ts)` tuple. TTL 5 min, max 32. |
+| `step_id` | Monotonic per-process integer assigned to every tool call. |
+| `trace` | JSONL stream of `{step_id, ts, caller, tool, args, result_summary, …}` rows under `traces/<trace_id>/`. |
+| `scenario` | YAML file consumed by mock mode that scripts initial state plus reactions. |
+| `ActionReceipt` | Structured response from any input tool — see §7. |
 
 ---
 
-## 5. Stable identity & selectors
+## 6. Stable identity, monitors, and selectors
 
-### 5.1 `window_uid`
+### 6.1 `window_uid`
 
-**Motivation.** README §"Available MCP Tools" already warns the
-positional `window_index` "may change between calls". Agents that store an
-index across steps mis-target.
+`WindowInfo` gains a `window_uid` field, populated per-adapter:
 
-**Behavior.**
-- `list_windows` gains a `window_uid` field per entry.
-- Every tool that currently takes `window_index` also accepts `window_uid`.
-  Exactly one of the two must be supplied; if both, `window_uid` wins and a
-  warning is included in the response.
-- `window_uid` is stable until the window closes. Reopening the same app
-  produces a new uid.
+| Adapter | Format |
+|---|---|
+| Windows | `win:{pid}:{hwnd}` |
+| macOS | `mac:{cg_window_number}` |
+| Linux | `x11:{wmctrl_id}` (hex stripped) |
+| Mock | `mock:{index}:{8-hex-nonce}` (nonce regenerated per process) |
 
-**Implementation.** Extend `WindowInfo` in `observer.py`. Each adapter
-populates the field:
-- Windows: `f"win:{pid}:{hwnd}"`.
-- macOS: `f"mac:{cg_window_number}"`.
-- Linux: `f"x11:{wmctrl_id}"`.
-- Mock: `f"mock:{index}:{uuid4().hex[:8]}"` generated at adapter init.
+Every existing tool that takes `window_index` also accepts `window_uid`. If
+both are supplied, `window_uid` wins and the response includes
+`warning: "both window_index and window_uid given; window_uid used"`.
+Resolving a stale uid returns `WindowGone`.
 
-**Errors.** If a uid no longer resolves: `WindowGone` (see §22).
+### 6.2 Selector grammar
 
-### 5.2 `element_selector`
+The parser auto-detects format by leading character.
 
-**Motivation.** Element `id` integers reset when the tree is re-walked. A
-selector lets the agent persist a target across `observe` calls.
+**XPath-ish (default; starts with role token).**
+```
+role[name="literal"]/role[name~="regex"]/role[index=2]
+Window[name="Notepad"]/Pane/Button[name="OK"]
+```
+Predicates: `name=`, `name~=` (regex, anchored), `value=`, `value~=`,
+`role=`, `keyboard_shortcut=`, `enabled=true`, `focused=true`, `index=N`
+(zero-based among same-role siblings). `*` matches any role. Empty
+predicate brackets allowed: `Window/Group/Button[index=0]`.
 
-**Format.** `role[name="literal"]/role[name~="regex"]/role[index=2]`
-- Bracket predicates are `name=`, `name~=` (regex), `value=`,
-  `keyboard_shortcut=`, `index=` (zero-based among siblings of the same role).
-- Empty predicate brackets are allowed: `Window/Group/Button[index=0]`.
-- The leading segment is matched against the window root.
+**CSS-ish (starts with `>` or `Window>` style with combinators).**
+```
+Window > Pane Button[name="OK"]
+```
+- `>` = direct child.
+- whitespace = descendant.
+- `[attr=...]` and `[attr~=...]` predicates as above.
+- `:nth-of-type(n)` is the CSS spelling of `[index=n-1]`.
 
-**API.** `find_element(window_uid, selector)` returns `{element_id, bounds,
-ambiguous_matches: int}`. `ambiguous_matches > 1` flags brittle selectors.
+Both compile to the same AST: a list of `Step(role, predicates, axis)` where
+`axis ∈ {child, descendant}`. Resolution walks the **full** tree (filtered
+trees from §10 are *display* filters; selectors always resolve against the
+unfiltered walk).
 
-**Implementation.** Pure function over the tree returned by
-`Adapter.get_element_tree`; no platform-specific code.
+`find_element(window_uid, selector)` returns:
+```json
+{
+  "ok": true,
+  "element_id": "root.1.2",
+  "selector": "Window/Pane/Button[name=\"OK\"]",
+  "bounds": {"x":320,"y":480,"width":80,"height":28},
+  "ambiguous_matches": 1,
+  "all_matches": [{"element_id":"root.1.2","bounds":{...}}]
+}
+```
+`ambiguous_matches > 1` flags brittle selectors. `all_matches` is capped at
+10. When zero match, returns `ElementNotFound`.
+
+### 6.3 Monitors / DPI
+
+`get_monitors()` returns:
+```json
+{
+  "ok": true,
+  "monitors": [
+    {"index":0, "primary":true, "bounds":{...},
+     "scale_factor":1.0, "logical_bounds":{...}, "physical_bounds":{...}}
+  ]
+}
+```
+`list_windows` adds `monitor_index`, `scale_factor`, `logical_bounds`,
+`physical_bounds`. Click coordinates remain physical pixels by default; an
+optional `coordinate_space: "logical"` parameter is accepted on
+`click_at`, `click_element`, `hover_at`, `drag`.
+
+### 6.4 Capabilities
+
+`get_capabilities()`:
+```json
+{
+  "ok": true,
+  "platform": "Linux",
+  "adapter": "linux-atspi",
+  "version": "0.2.0",
+  "protocol_version": 2,
+  "supports": {
+    "accessibility_tree": true,
+    "uia_invoke": false,
+    "occlusion_detection": true,
+    "drag": true,
+    "ocr": true,
+    "vlm": true,
+    "redaction": true,
+    "scenarios": true,
+    "tracing": true,
+    "replay": true,
+    "image_blur": true
+  },
+  "config": {"tree_max_depth": 8, "ascii_grid": {"width":110,"height":38}}
+}
+```
 
 ---
 
-## 6. Element-targeted actions
+## 7. ActionReceipt
 
-**Motivation.** Coordinate-based `click_at` requires the agent to do bbox
-math and breaks under any layout shift. Element-targeted verbs solve both.
-
-**New tools.**
-
-| MCP tool | REST | Params |
-|---|---|---|
-| `click_element` | `POST /api/element/click` | `window_uid`, `element_id` or `selector`, `button=left\|right\|middle`, `count=1\|2` |
-| `focus_element` | `POST /api/element/focus` | window + element id/selector |
-| `set_value` | `POST /api/element/set_value` | window + element + `value`, `clear_first=true` |
-| `invoke_element` | `POST /api/element/invoke` | window + element — uses UIA `Invoke` pattern when available, falls back to a center-click |
-| `select_option` | `POST /api/element/select` | window + element + `option_name` or `option_index` for combo boxes / lists |
-
-**Response (all of the above).** An `ActionReceipt`:
+Every input tool (new and composite) returns:
 
 ```json
 {
-  "step_id": 42,
   "ok": true,
+  "step_id": 42,
+  "caused_by_step_id": 42,
   "action": "click_element",
+  "dry_run": false,
   "target": {
     "window_uid": "win:1234:0xabc",
-    "element_id": 17,
+    "element_id": "root.1.2",
     "selector": "Window/Pane/Button[name=\"OK\"]",
-    "bounds": {"x": 320, "y": 480, "width": 80, "height": 28}
+    "bounds": {"x":320,"y":480,"width":80,"height":28}
   },
-  "before": {"tree_hash": "sha1:…", "focused_selector": "…"},
-  "after":  {"tree_hash": "sha1:…", "focused_selector": "…"},
+  "before": {"tree_hash":"sha1:…", "focused_selector":"…"},
+  "after":  {"tree_hash":"sha1:…", "focused_selector":"…"},
   "changed": true,
-  "new_dialogs": [{"window_uid": "…", "title": "Confirm"}],
-  "duration_ms": 184
+  "new_dialogs": [{"window_uid":"…","title":"Confirm"}],
+  "duration_ms": 184,
+  "success": true
 }
 ```
 
-**Errors.** `ElementNotFound`, `ElementOccluded`, `ElementDisabled`,
-`PatternUnsupported` (e.g. `set_value` on a label).
-
-**Implementation.** Layer on top of `Adapter.click_at`. On Windows, prefer
-UIA patterns (`InvokePattern`, `ValuePattern`, `SelectionItemPattern`) over
-synthetic clicks; fall back to `bring_to_foreground` + center-click.
-
----
-
-## 7. Richer input verbs
-
-Beyond click/type/key/scroll the agent currently has, add:
-
-| Tool | Purpose |
-|---|---|
-| `hover_at` / `hover_element` | Surfaces tooltips and hover-only menus. |
-| `right_click_at` / `right_click_element` | Context menus. |
-| `double_click_at` / `double_click_element` | List-item activation. |
-| `drag` | `from={x,y\|element}`, `to={x,y\|element}`, `modifiers=[]`. |
-| `key_into_element` | Focus an element first, then `press_key`, atomically. |
-| `clear_text` | Select-all + delete on a focused field. |
-
-All return the standard `ActionReceipt`. `drag` adds `path` (sampled
-intermediate points) for trace fidelity.
+Notes:
+- `success` is the legacy field (D5); duplicates `ok` for backwards compat.
+- `changed` is computed from `tree_hash_before != tree_hash_after` (D13).
+- `new_dialogs` is the diff between window lists before and after the call.
+- `target.bounds` is the resolved bbox at action time (used by confirm
+  tokens, §22).
+- For `dry_run: true`, the action is not invoked; `before` and `after`
+  point to the same observation; `changed: false`.
 
 ---
 
-## 8. Tree filtering & paging
+## 8. Element-targeted actions
 
-**Motivation.** Browser windows can have thousands of UIA nodes. Agents pay
-the token cost even when they only need buttons.
+| MCP tool | REST | Required args | Notes |
+|---|---|---|---|
+| `click_element` | `POST /api/element/click` | window + element id/selector | `button=left\|right\|middle` (default `left`), `count=1\|2` (default `1`) |
+| `focus_element` | `POST /api/element/focus` | window + element | UIA `SetFocus` on Windows; AXUIElementSetAttributeValue on macOS; AT-SPI grab_focus on Linux |
+| `set_value` | `POST /api/element/set_value` | window + element + `value` | `clear_first=true`. UIA `ValuePattern` preferred; falls back to focus + select-all + type |
+| `invoke_element` | `POST /api/element/invoke` | window + element | UIA `InvokePattern` preferred; falls back to `click_element` |
+| `select_option` | `POST /api/element/select` | window + element + `option_name`/`option_index` | UIA `SelectionItemPattern` |
 
-**`get_window_structure` gains:**
+All return `ActionReceipt`. Errors: `ElementNotFound`, `ElementOccluded`,
+`ElementDisabled`, `PatternUnsupported`, `WindowGone`.
 
-```jsonc
+---
+
+## 9. Richer input verbs
+
+Beyond click/type/key/scroll, add:
+
+| Tool | REST | Behavior |
+|---|---|---|
+| `hover_at` / `hover_element` | `POST /api/hover` | Move pointer; pause `hover_ms` (default 250). |
+| `right_click_at` / `right_click_element` | `POST /api/element/right_click` | Synonym for `click_element(button=right)`. |
+| `double_click_at` / `double_click_element` | `POST /api/element/double_click` | Synonym for `click_element(count=2)`. |
+| `drag` | `POST /api/drag` | `from`/`to` accept `{x,y}` or `{element}`. `modifiers: ["shift", …]`. Records `path` (3 sample points). |
+| `key_into_element` | `POST /api/element/key` | `focus_element` then `press_key` atomically. |
+| `clear_text` | `POST /api/element/clear_text` | Focus, select-all, delete. |
+
+All return `ActionReceipt`. `drag` adds `path` to the receipt.
+
+---
+
+## 10. Tree filtering & paging
+
+`get_window_structure` (existing) gains optional params:
+
+```json
 {
-  "window_uid": "win:…",
-  "roles": ["Button", "Edit", "Hyperlink"],   // include-list
-  "exclude_roles": ["Image"],                  // optional
-  "visible_only": true,                        // intersect with visible_areas
-  "name_regex": "Save|Submit",                 // optional
-  "max_text_len": 80,                          // truncate value/name
-  "prune_empty": true,                         // drop subtrees with no matches
-  "max_nodes": 500,                            // hard cap
-  "page_cursor": null                          // pagination
+  "window_uid": "...",
+  "roles": ["Button","Edit","Hyperlink"],
+  "exclude_roles": ["Image"],
+  "visible_only": true,
+  "name_regex": "Save|Submit",
+  "max_text_len": 80,
+  "prune_empty": true,
+  "max_nodes": 500,
+  "page_cursor": null
 }
 ```
 
-**Response.** Adds `truncated: true|false` and `next_cursor`. When
-`prune_empty` is set, surviving branches keep their ancestry so selectors
-remain valid.
+Response adds `truncated: bool`, `next_cursor: string|null`, `node_count`.
 
-**Implementation.** Filtering is a post-walk pass in
-`observer.ScreenObserver.get_window_structure`; adapters are unchanged.
+`page_cursor` is the post-order `element_id` of the last returned node; the
+server resumes the walk from the next sibling. Cursors are stable as long
+as the underlying tree shape hasn't changed; if it has, the server returns
+`SnapshotExpired` (recoverable, retry without the cursor).
 
 ---
 
-## 9. Cropped & token-budgeted perception
+## 11. Cropped & token-budgeted perception
 
-### 9.1 `get_screenshot` cropping
+### 11.1 `get_screenshot` cropping
 
-```jsonc
+```json
 {
-  "window_uid": "win:…",
-  "element_id": 17,           // OR
-  "bbox": {"x":..,"y":..,"width":..,"height":..},
-  "padding_px": 8,
-  "max_width": 1024            // downscale cap; preserves aspect ratio
+  "window_uid":"...",
+  "element_id":"root.1.2",
+  "bbox":{"x":..,"y":..,"width":..,"height":..},
+  "padding_px":8,
+  "max_width":1024
 }
 ```
+Either `element_id` *or* `bbox` *or* neither (whole window). `max_width`
+downscales preserving aspect ratio. Response adds `source_bbox` (absolute
+pixels).
 
-Returns the same shape as today plus `source_bbox` (the absolute pixel
-rectangle that was captured) so VLM callers can map outputs back.
-
-### 9.2 `get_screen_description` budgeting
+### 11.2 `get_screen_description` budgeting
 
 Adds:
+- `max_tokens` — hard cap (approx; cuts at character boundary with `…
+  [truncated]`).
+- `focus_element` — element id; biases the prompt and filters OCR overlay.
+- `mode="auto"` — server picks: accessibility if tree size ≥ 10 nodes; else
+  OCR if available; else VLM if enabled; else accessibility. The chosen
+  mode is reported as `effective_mode`.
 
-- `max_tokens` — hard cap; description is truncated with a `… [truncated]`
-  marker.
-- `focus_element` — biases the prose / OCR / VLM prompt to that subtree
-  (passed as a hint to the VLM and as a filter to the OCR overlay).
-- `mode="auto"` — server picks accessibility-only when the tree is rich,
-  OCR when sparse, VLM when both are weak. The chosen mode is reported in
-  the response.
+### 11.3 `get_ocr` (new)
 
-### 9.3 OCR region
-
-`get_ocr` (new) — runs OCR over a single bbox / element instead of the whole
-window, returning `[{text, confidence, bbox}]`. Cheaper and more useful for
-agents than a full prose blob.
+Region-scoped OCR: input `window_uid` + (`element_id` | `bbox`); output
+`[{text, confidence, bbox}]`.
 
 ---
 
-## 10. Wait & synchronization
+## 12. Wait & synchronization
 
-### 10.1 `wait_for`
+### 12.1 `wait_for`
 
-```jsonc
+```json
 {
-  "window_uid": "win:…",          // optional; default = any window
+  "window_uid": "win:…",
   "any_of": [
-    {"type": "element_appears", "selector": "Window/.../Button[name=\"OK\"]"},
-    {"type": "element_disappears", "element_id": 17},
-    {"type": "text_visible", "regex": "Saved"},
-    {"type": "window_appears", "title_regex": "Confirm"},
-    {"type": "tree_changes", "since": "<tree_token>"},
-    {"type": "focused_changes"}
+    {"type":"element_appears", "selector":"Window/.../Button[name=\"OK\"]"},
+    {"type":"element_disappears", "element_id":"root.1.2"},
+    {"type":"text_visible", "regex":"Saved"},
+    {"type":"window_appears", "title_regex":"Confirm"},
+    {"type":"window_disappears", "window_uid":"…"},
+    {"type":"tree_changes", "since":"<tree_token>"},
+    {"type":"focused_changes"}
   ],
   "timeout_ms": 5000,
   "poll_ms": 200
 }
 ```
+Response:
+```json
+{"ok":true, "matched_index":0, "matched_detail":{...},
+ "elapsed_ms":420, "polls":3}
+```
+On timeout: `{"ok":false, "error":{"code":"Timeout","recoverable":true},
+"elapsed_ms":5000, "polls":25, "last_observation":{...}}`.
 
-Returns `{matched_index, matched_detail, elapsed_ms}` or
-`{matched_index: null, elapsed_ms, last_observation}` on timeout.
+`max(timeout_ms) = config.wait_for.max_timeout_ms` (default 60000).
 
-**Implementation.** Server-side polling loop using existing observation
-methods. Caps total wait so a stuck agent can't hang the server (`max
-timeout_ms = 60000` configurable).
+### 12.2 `wait_idle`
 
-### 10.2 `wait_idle`
-
-Heuristic: returns once the tree hash has been stable for `quiet_ms`
-(default 750) or `timeout_ms` is reached. Cheap "page settled" signal.
+Returns once `tree_hash` is stable for `quiet_ms` (default 750) or
+`timeout_ms` is reached.
 
 ---
 
-## 11. Observe-with-diff
+## 13. Observe-with-diff
 
-**Problem.** `observe_window` returns the full tree every call. After 30
-steps, the agent has paid for the same tree 30 times.
+Every tree-producing tool (`get_window_structure`, `observe_window`,
+`get_screen_description`, `get_visible_areas`, `get_ocr`) returns a
+`tree_token`. Passing `since=<tree_token>` returns a diff.
 
-**Mechanism.** Every tree-producing tool returns a `tree_token`. Passing
-`since=<tree_token>` returns:
-
-```jsonc
+### 13.1 Custom format (default)
+```json
 {
-  "window_uid": "win:…",
-  "tree_token": "tt:abc123",        // new token
+  "ok": true,
+  "window_uid": "…",
+  "tree_token": "tt:abc123",
   "base_token": "tt:prev",
+  "format": "custom",
   "changes": [
-    {"op": "add",     "path": "0/2/3", "node": {...}},
-    {"op": "remove",  "path": "0/4"},
-    {"op": "replace", "path": "0/2/3", "fields": {"value": "hello"}},
-    {"op": "move",    "from": "0/5", "to": "0/2/4"}
+    {"op":"add",     "path":"0/2/3", "node":{...}},
+    {"op":"remove",  "path":"0/4"},
+    {"op":"replace", "path":"0/2/3", "fields":{"value":"hello"}},
+    {"op":"move",    "from":"0/5", "to":"0/2/4"}
   ],
   "unchanged": false
 }
 ```
+`path` is slash-delimited child-index trail. `unchanged: true` ⇒ empty
+`changes`.
 
-`path` is a slash-delimited child-index trail. `unchanged: true` means an
-empty `changes` array — useful as a heartbeat.
+### 13.2 RFC 6902 format (`format="json-patch"`)
+Standard JSON Patch over the serialized tree. `move` is emitted when both
+sides agree on identity (matched by stable element role + name signature);
+otherwise add/remove pairs.
 
-Same pattern applies to:
-- `get_screen_description(since=…)` — returns `unchanged: true` when the
-  description hash matches.
-- `get_visible_areas(since=…)` — returns only added/removed regions.
-- `get_ocr(since=…)` — returns added/removed text fragments.
-
-**Implementation.** A per-session ring buffer keyed by `tree_token` storing
-the last N (~16) trees per window. On `since=` lookup, compute a JSON-Patch
-style diff. If the token has expired, return the full tree with
-`base_token: null`.
-
----
-
-## 12. Composite action+observe
-
-```text
-click_element_and_observe   — click_element, then observe_window(since=…)
-type_and_observe            — type_text, then observe_window(since=…)
-press_key_and_observe       — press_key, then observe_window(since=…)
-```
-
-One round-trip. Response = `ActionReceipt` with `observation` field
-embedded. Saves a tool call per step, ~halving trajectory length on
-typical tasks.
-
-A single `wait_after_ms` parameter (default 200) bridges the action and the
-observation — enough for most UIs to settle without a full `wait_idle`.
+### 13.3 Token lifecycle
+- Stored per-`window_uid` in a per-process LRU keyed by token, max 16
+  trees per window, TTL 5 minutes.
+- Tokens survive across REST and MCP calls (single global session, D2).
+- An expired or unknown token returns the **full** tree with
+  `base_token: null` and `format: "full"` (recoverable; the agent simply
+  caches the new token).
 
 ---
 
-## 13. Snapshots & diffs
+## 14. Composite action+observe
 
-```text
-snapshot()                  → {snapshot_id, summary}
-snapshot_get(snapshot_id)   → {windows, tree_per_window, screenshot_refs, ocr}
-snapshot_diff(a, b)         → {windows_added, windows_removed, per_window_changes}
-snapshot_drop(snapshot_id)  → {ok}
-```
+| Tool | REST | Behavior |
+|---|---|---|
+| `click_element_and_observe` | `POST /api/element/click_and_observe` | `click_element`, sleep `wait_after_ms` (default 200), then `observe_window(since=…)`. |
+| `type_and_observe` | `POST /api/type_and_observe` | `type_text`, sleep, observe. |
+| `press_key_and_observe` | `POST /api/key_and_observe` | `press_key`, sleep, observe. |
 
-Snapshots live in memory with a TTL (default 5 minutes) and an LRU cap
-(default 32). Used by both agents (rollback reasoning: "what did this look
-like before I clicked Save?") and harnesses (oracle inputs).
-
-`snapshot_diff` reuses the §11 diff machinery so the output format is
-consistent across the API.
+Response = `ActionReceipt` plus `observation` field (the diff or full
+observation from §13).
 
 ---
 
-## 14. Trace recording
+## 15. Snapshots, tracing, replay (harness substrate)
+
+### 15.1 Snapshots
+
+| Tool | REST |
+|---|---|
+| `snapshot()` | `POST /api/snapshot` |
+| `snapshot_get(snapshot_id)` | `GET  /api/snapshot/<id>` |
+| `snapshot_diff(a, b, format?)` | `POST /api/snapshot/diff` |
+| `snapshot_drop(snapshot_id)` | `DELETE /api/snapshot/<id>` |
+
+Stored in memory: TTL 5 min, LRU 32. Diff reuses §13 machinery.
+
+### 15.2 Tracing
 
 ```text
-trace_start(label?)  → {trace_id, started_at}
+trace_start(label?)  → {trace_id, started_at, dir}
 trace_stop(trace_id) → {trace_id, path, step_count, duration_ms}
-trace_status()       → {active_trace_id?, step_count}
+trace_status()       → {active_trace_id?, step_count, dir?}
 ```
 
-While active, every tool call (including failed ones) is appended as one
-JSONL line:
+Layout (D16):
+```
+traces/
+  <trace_id>/
+    trace.jsonl
+    screenshots/
+      step-00001-full.png
+      step-00001-window.png
+      step-00006-full.png
+      …
+```
 
-```jsonc
+Each line:
+```json
 {
-  "step_id": 17,
-  "ts": "2026-05-10T14:05:01.234Z",
-  "caller": "mcp:claude-desktop",        // or "rest:127.0.0.1"
-  "tool": "click_element",
-  "args": {...},
-  "result_summary": {"ok": true, "changed": true},
-  "screenshot_ref": "trace-abc/step-00017.png",  // optional, see config
-  "tree_hash_before": "sha1:…",
-  "tree_hash_after":  "sha1:…",
-  "duration_ms": 184
+  "step_id":17,"ts":"2026-05-10T14:05:01.234Z","caller":"mcp",
+  "tool":"click_element","args":{...},"result_summary":{"ok":true,"changed":true},
+  "screenshot_full_ref":"screenshots/step-00017-full.png",
+  "screenshot_window_ref":"screenshots/step-00017-window.png",
+  "tree_hash_before":"sha1:…","tree_hash_after":"sha1:…",
+  "duration_ms":184
 }
 ```
 
-**Config.** New `tracing` block in `config.json`:
-
-```jsonc
+`config.tracing`:
+```json
 {
-  "tracing": {
-    "dir": "./traces",
-    "screenshot_every_n_actions": 5,   // 0 = never, 1 = every action
-    "max_args_bytes": 4096,            // truncate large args
-    "redact_keys": ["api_key", "password", "Authorization"]
-  }
+  "dir":"./traces",
+  "screenshot_every_n_actions":5,
+  "max_args_bytes":4096,
+  "redact_keys":["api_key","password","Authorization"]
 }
 ```
 
-**Privacy.** Trace files inherit the redaction rules in §20.
+### 15.3 Replay
 
----
+| Tool | Behavior |
+|---|---|
+| `replay_start(path, mode="execute"\|"verify", on_divergence="stop"\|"warn"\|"resume")` | Loads JSONL, primes engine. |
+| `replay_step()` | Advance one step; returns `{position, total, divergence?}`. |
+| `replay_status()` | `{position, total, divergences:[]}`. |
+| `replay_stop()` | Frees resources. |
 
-## 15. Trace replay
+### 15.4 Replay comparison rules (D6)
 
-```text
-replay_start(path, mode="execute"|"verify", on_divergence="stop"|"warn"|"resume")
-replay_step()        → advance one step
-replay_status()      → {position, total, divergences[]}
-replay_stop()
+Per-tool dictionary of fields to compare. Anything not listed is ignored.
+
+| Tool | Compared fields |
+|---|---|
+| `list_windows` | `count`, set of `(title)` (positions ignored) |
+| `get_window_structure` | `node_count`, `tree_hash` |
+| `find_element` | `ok`, `error.code`, `ambiguous_matches > 0` |
+| `click_element` / `focus_element` / `invoke_element` / `set_value` / `select_option` | `ok`, `error.code`, `target.selector`, `changed` |
+| `click_at` / `hover_at` / `drag` | `ok`, `error.code` |
+| `type_text` / `press_key` / `scroll` | `ok`, `error.code` |
+| `get_screen_description` | `ok`, `effective_mode` (text body ignored — non-deterministic) |
+| `get_screenshot*` | `ok`, `width`, `height` (image bytes ignored) |
+| `get_ocr` | `ok` (text ignored) |
+| `wait_for` / `wait_idle` | `ok`, `matched_index` (timing ignored) |
+| `assert_state` | `ok`, `failures[].kind` |
+| `snapshot*` | `ok` |
+| All read-only `get_*` | `ok` |
+
+A divergence row:
+```json
+{"step_id":42,"tool":"click_element",
+ "differences":[{"path":"target.selector","want":"…","got":"…"}]}
 ```
 
-Modes:
-- `execute` — re-issue each tool call, ignore recorded result, emit a fresh
-  trace.
-- `verify` — re-issue each tool call, compare result hash to the recorded
-  one, record a `divergence` row when they differ. The harness's main
-  regression-test mode.
-
-**Determinism notes.** Because window indexes and bounds are not stable
-across runs, `verify` compares by `window_uid_kind` (the prefix:
-`win:` / `mac:` / `x11:` / `mock:`) plus title regex, not by raw uid. For
-hermetic eval we rely on `--mock` (§16).
-
----
-
-## 16. Mock scenario DSL
-
-**Motivation.** Today `--mock` produces a static fake. Harnesses need
-scripted state transitions: clicking "Login" should yield a "Welcome"
-screen.
-
-**Format** (`scenarios/login.yaml`):
+### 15.5 Mock scenario DSL (D8)
 
 ```yaml
 name: login-happy-path
-windows:
-  - uid: mock:app
-    title: "Acme Login"
-    geometry: {x: 100, y: 100, width: 800, height: 600}
-    tree:
-      role: Window
-      children:
-        - {role: Edit, name: "Username", id: u}
-        - {role: Edit, name: "Password", id: p, value: "", secret: true}
-        - {role: Button, name: "Login", id: btn}
-
-reactions:
-  - on: {tool: type_text, target_id: u, text: "alice"}
-    set: {id: u, value: "alice"}
-  - on: {tool: type_text, target_id: p, text_regex: ".+"}
-    set: {id: p, value: "<filled>"}
-  - on: {tool: click_element, target_id: btn}
-    when: {id: u, value: "alice"}
-    transition_to: welcome
+initial_state: start
 
 states:
+  start:
+    windows:
+      - uid: mock:app
+        title: "Acme Login"
+        process: acme.exe
+        pid: 1234
+        bounds: {x: 100, y: 100, width: 800, height: 600}
+        tree:
+          role: Window
+          name: "Acme Login"
+          children:
+            - {role: Edit,   name: "Username", id: u}
+            - {role: Edit,   name: "Password", id: p, value: "", secret: true}
+            - {role: Button, name: "Login",    id: btn}
+
   welcome:
     windows:
       - uid: mock:app
         title: "Acme — Welcome"
+        process: acme.exe
+        pid: 1234
+        bounds: {x: 100, y: 100, width: 800, height: 600}
         tree:
           role: Window
           children:
             - {role: Text, name: "Hello, alice"}
+
+reactions:
+  - on: {tool: type_text, target_id: u, text_regex: ".+"}
+    set: [{id: u, value: "{text}"}]
+  - on: {tool: type_text, target_id: p, text_regex: ".+"}
+    set: [{id: p, value: "<filled>"}]
+  - on: {tool: click_element, target_id: btn}
+    when: [{id: u, value: "alice"}, {id: p, value_not_empty: true}]
+    transition_to: welcome
 
 oracles:
   success:
@@ -461,24 +550,24 @@ oracles:
     - {kind: window_appears, title_regex: "Error"}
 ```
 
-**Loading.**
+**Reaction semantics.**
+1. Reactions fire **after** the action would have succeeded, in declaration
+   order. First matching reaction wins; later reactions for the same tool
+   call are skipped.
+2. `set` mutates element fields in the current state (not a transition).
+3. `transition_to` swaps the active state; subsequent `observe` calls see
+   the new state's tree.
+4. `when` is an AND list of element predicates; missing IDs evaluate false.
+5. `text_regex` is matched against the action's `text` argument and the
+   first capture group is bound to `{text}` for substitution in `set`.
+6. If no reaction matches, the action returns its standard `ActionReceipt`
+   with `changed: false`.
 
-```bash
-python main.py --mock --scenario scenarios/login.yaml
-```
+Loaded via `python main.py --mock --scenario scenarios/login.yaml`.
 
-**Implementation.** A new `MockScenarioAdapter` in `observer.py` that
-extends the existing mock adapter. Reactions are pattern-matched against
-incoming action calls before they reach the no-op input layer.
+### 15.6 Oracles
 
----
-
-## 17. Eval oracles
-
-**Motivation.** Harnesses currently re-implement assertions in glue code.
-Move them into the server so agents and harnesses share one vocabulary.
-
-**Tool.** `assert_state(predicate)` — `predicate` is a list (AND) of:
+`assert_state(predicate)` — `predicate` is a list (AND) of:
 
 | Kind | Args |
 |---|---|
@@ -486,117 +575,129 @@ Move them into the server so agents and harnesses share one vocabulary.
 | `element_absent` | `selector`, `window_uid?` |
 | `value_equals` | `selector`, `expected` |
 | `value_matches` | `selector`, `regex` |
-| `text_visible` | `regex`, `window_uid?` |
+| `text_visible` | `regex`, `window_uid?`, `mode?` (`tree`/`ocr`/`auto`, default `auto`) |
 | `window_focused` | `title_regex` |
+| `window_exists` | `title_regex` or `window_uid` |
 | `tree_hash_equals` | `expected_hash` |
-| `screenshot_similar` | `reference_path`, `min_ssim=0.95` |
+| `screenshot_similar` | `reference_path`, `min_ssim=0.95` (requires `scikit-image`; returns `PredicateUnsupported` otherwise) |
 
-Returns `{ok: bool, failures: [{kind, args, observed}]}`. Never raises;
-the harness branches on `ok`.
-
-`screenshot_similar` requires `pillow` and `scikit-image` as optional
-dependencies; it's gated on availability and returns
-`PredicateUnsupported` otherwise.
+Returns:
+```json
+{"ok":true, "all_passed":true,
+ "results":[{"kind":"element_exists","passed":true,"observed":{...}}]}
+```
+Never raises; harness branches on `all_passed`.
 
 ---
 
-## 18. Rate / budget controls
+## 16. Budgets
 
-**Per-session limits**, configured at start (CLI flags or MCP-handshake
-`initialization_options`):
+Per-process limits set via CLI flags (forwarded to config) or
+`initialization_options` on MCP `initialize`:
 
 | Limit | Default | Trip behavior |
 |---|---|---|
-| `max_actions` | unlimited | Subsequent input tools return `BudgetExceeded`. |
-| `max_screenshots` | unlimited | `get_screenshot*` return `BudgetExceeded`. |
-| `max_vlm_tokens` | unlimited | `get_screen_description(mode=vlm)` returns `BudgetExceeded`. |
-| `max_session_seconds` | unlimited | All tools return `BudgetExceeded`. |
-| `actions_per_minute` | unlimited | Sliding window; `RateLimited` (recoverable) when tripped. |
+| `max_actions` | unlimited | `BudgetExceeded` (non-recoverable) |
+| `max_screenshots` | unlimited | `BudgetExceeded` |
+| `max_vlm_tokens` | unlimited | `BudgetExceeded` |
+| `max_session_seconds` | unlimited | `BudgetExceeded` |
+| `actions_per_minute` | unlimited | `RateLimited` (recoverable, retry hint) |
 
-Status tool: `get_budget_status()` returns remaining counts, so agents can
-self-pace.
+`get_budget_status()` returns remaining counts:
+```json
+{"ok":true,
+ "actions":{"used":17,"limit":100,"remaining":83},
+ "screenshots":{"used":3,"limit":50,"remaining":47},
+ "session_seconds":{"elapsed":42,"limit":1800,"remaining":1758},
+ "actions_per_minute":{"in_window":4,"limit":30,"remaining":26}}
+```
 
 ---
 
-## 19. Step IDs & causality
+## 17. Step IDs & causality
 
-Every tool result includes:
+Every result includes:
+```json
+{"step_id":42, "caused_by_step_id":41}
+```
+- `step_id` is monotonic per-process across REST + MCP.
+- For input tools, `caused_by_step_id == step_id`.
+- For read-only tools, `caused_by_step_id` is the most recent input action's
+  `step_id`; `null` until the first action.
 
-```jsonc
+---
+
+## 18. Sensitive-region redaction (D7)
+
+`config.redaction`:
+```json
 {
-  "step_id": 42,
-  "caused_by_step_id": 41   // null for read-only or first-of-session
+  "enabled": true,
+  "window_title_patterns": ["1Password","Bitwarden"],
+  "element_name_patterns":  ["Password","PIN","SSN"],
+  "element_role_patterns":  ["PasswordEdit"],
+  "ocr_text_patterns":      ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
+  "replacement":            "[REDACTED]",
+  "blur_screenshots":       false
 }
 ```
 
-`caused_by_step_id` is the most recent input action when the tool is
-read-only; it is its own `step_id` when the tool is an input. This lets a
-harness reconstruct a trajectory graph without parsing the trace.
+Effects:
+- Tree node `name`/`value` matching → replacement string.
+- OCR output → regex sweep with replacement.
+- VLM prompt → preamble: "do not transcribe content of any field whose role
+  matches: …".
+- Screenshots → if `blur_screenshots: true`, matched bboxes painted solid
+  black (cheap, no PIL filter).
+- The redaction patterns themselves are logged to traces; the redacted
+  content is not.
+
+`get_redaction_status()` reports `{enabled, patterns_count, applied_count}`.
 
 ---
 
-## 20. Sensitive-region redaction
+## 19. Dry-run and action allowlist
 
-**Motivation.** README §"Known Limitations" already calls out prompt
-injection; the same machinery hides credentials and PII.
-
-**Config.**
-
-```jsonc
-{
-  "redaction": {
-    "window_title_patterns": ["1Password", "Bitwarden"],
-    "element_name_patterns":  ["Password", "PIN", "SSN"],
-    "element_role_patterns":  ["PasswordEdit"],
-    "ocr_text_patterns":      ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
-    "replacement": "[REDACTED]"
-  }
-}
-```
-
-**Effects.**
-- Tree nodes matching the patterns have `name`/`value` replaced before
-  serialization.
-- OCR output passes through a regex sweep.
-- VLM prompts include a "do not transcribe content of any field whose role
-  is …" preamble.
-- Screenshots have matched bboxes drawn over with solid black before being
-  returned. (Optional, `redaction.blur_screenshots: true`.)
-- The redaction list itself is logged to the trace, not the redacted
-  content.
-
----
-
-## 21. Dry-run, allowlist, and confirmation tokens
-
-### 21.1 Dry-run
-
+### 19.1 `dry_run`
 Every input tool accepts `dry_run: true`. Server resolves the target,
-performs all checks (occlusion, enabled, pattern support), and returns the
-`ActionReceipt` it *would* return — but never invokes the platform layer.
-`receipt.ok: true, receipt.dry_run: true, receipt.changed: false`.
+performs all checks, returns the receipt **without** invoking the platform
+layer. `dry_run: true, changed: false` in the receipt.
 
-### 21.2 Action allowlist
-
-Config:
-
-```jsonc
-{
-  "actions": {
-    "allow": ["click_element", "focus_element", "wait_for"],
-    "deny":  ["press_key", "type_text"],
-    "default": "deny"
-  }
-}
+### 19.2 Allowlist
+`config.actions`:
+```json
+{"allow": ["click_element","focus_element","wait_for"],
+ "deny":  ["press_key","type_text"],
+ "default": "allow"}
 ```
-
 Mismatches return `PermissionDenied` (non-recoverable).
 
-### 21.3 Confirmation tokens (for destructive verbs)
+---
 
-Config flags certain element predicates as destructive:
+## 20. Audit log
 
-```jsonc
+`audit.log` (path configurable via `logging.audit_path`, default
+`./audit.log`). One line per call:
+
+```text
+2026-05-10T14:05:01.234Z step=42 caller=mcp tool=click_element ok=true changed=true
+  args.window_uid=win:1234:0xabc args.element_id=root.1.2 redactions=args.text
+```
+
+Off by default; `logging.audit: true` to enable. Rotation via
+`logging.audit_max_bytes` (default 10 MB) and `logging.audit_backups`
+(default 3).
+
+`config.audit.redact_arg_keys` (D17) lists arg keys whose values are
+replaced with `<redacted>` before serialization. Defaults:
+`["text", "value", "password", "api_key", "Authorization"]`.
+
+---
+
+## 21. Confirmation tokens (D9)
+
+Destructive actions require a `confirm_token`. Config:
+```json
 {
   "confirmation_required": [
     {"name_regex": "(?i)delete|remove|send|pay|sign"},
@@ -606,31 +707,33 @@ Config flags certain element predicates as destructive:
 ```
 
 Flow:
-1. Agent calls `propose_action(action, args)` → server returns
-   `{confirm_token, expires_at, would_target: {...}}`.
-2. Agent calls the actual action with `confirm_token=…`. Token is
-   single-use and bound to the resolved element.
-3. Without a token, the action returns `ConfirmationRequired` (recoverable
-   — the suggested next tool is `propose_action`).
+1. Agent: `propose_action(action, args)` → server resolves the target and
+   returns:
+   ```json
+   {"ok":true, "confirm_token":"ct:abc123", "expires_at":"…",
+    "would_target":{"window_uid":"…","selector":"…","bounds":{...},
+                    "screenshot_b64":"…"}}
+   ```
+   Tokens TTL 60 s (config: `confirmation.ttl_seconds`).
+2. Agent calls the actual action with `confirm_token=…`.
+3. Server validates: token unused, not expired, action+selector match,
+   window_uid matches, **resolved bbox within ±20 px of recorded bbox**
+   (config: `confirmation.bbox_tolerance_px`). Otherwise
+   `ConfirmationInvalid` (recoverable; agent should re-propose).
+
+Without a token, destructive actions return `ConfirmationRequired`
+(recoverable; suggested next: `propose_action`).
 
 ---
 
 ## 22. Structured error taxonomy
 
-All errors share:
-
-```jsonc
-{
-  "ok": false,
-  "error": {
-    "code": "ElementNotFound",
-    "message": "No element matches selector …",
-    "recoverable": true,
-    "suggested_next_tool": "find_element",
-    "context": {"selector": "...", "window_uid": "..."}
-  },
-  "step_id": 99
-}
+All errors:
+```json
+{"ok":false,"success":false,"step_id":99,
+ "error":{"code":"ElementNotFound","message":"…",
+          "recoverable":true,"suggested_next_tool":"find_element",
+          "context":{"selector":"…","window_uid":"…"}}}
 ```
 
 | Code | Recoverable | Suggested next |
@@ -646,194 +749,133 @@ All errors share:
 | `BudgetExceeded` | no | — |
 | `PermissionDenied` | no | — |
 | `ConfirmationRequired` | yes | `propose_action` |
-| `SnapshotExpired` | yes | `snapshot` (re-take) |
+| `ConfirmationInvalid` | yes | `propose_action` |
+| `SnapshotExpired` | yes | retry without `since` / re-take |
 | `ScenarioInvalid` | no | — |
+| `PlatformUnsupported` | no | `get_capabilities` |
+| `PredicateUnsupported` | no | — |
 | `Internal` | no | — |
-
-Today's free-text error strings are mapped onto this taxonomy by a
-translation table in `observer.py`; legacy callers see the same HTTP
-status codes.
+| `BadRequest` | no | — |
 
 ---
 
-## 23. Capability discovery
+## 23. Telemetry endpoints
 
-`get_capabilities()` returns:
+`GET /api/healthz` — `{ok, uptime_s, adapter, version, step_count}`.
 
-```jsonc
-{
-  "platform": "Linux",
-  "adapter": "linux-stub",
-  "supports": {
-    "accessibility_tree": false,
-    "uia_invoke": false,
-    "drag": true,
-    "ocr": true,
-    "vlm": true,
-    "occlusion_detection": false,
-    "multi_monitor": true,
-    "redaction": true,
-    "scenarios": false
-  },
-  "config": {
-    "tree_max_depth": 8,
-    "ascii_grid": {"width": 110, "height": 38}
-  },
-  "version": "0.2.0"
-}
+`GET /api/metrics` — Prometheus text format. Counters: `oso_tool_calls_total`
+(label: `tool`, `ok`), `oso_errors_total` (label: `code`),
+`oso_screenshots_total`, `oso_vlm_tokens_total`. Gauges:
+`oso_active_traces`, `oso_snapshot_count`. Off by default
+(`telemetry.metrics_enabled`).
+
+---
+
+## 24. CI / headless
+
+`.github/workflows/ci.yml` runs:
+1. `pip install -r requirements.txt -r requirements-dev.txt`.
+2. `ruff check .`
+3. `pytest tests/ -q`
+
+No Docker, no Xvfb. Tests run in `--mock` or via direct module imports —
+they never need a desktop session.
+
+---
+
+## 25. File / module layout
+
+New / modified files:
+
+```
+selectors.py          # Selector AST, parser (XPath + CSS), resolver
+errors.py             # Error code constants + Error class + http_status_for
+diff.py               # Tree diff (custom + RFC 6902); tree hashing
+session.py            # Single global session: step_ids, tree_tokens, snapshots
+hashing.py            # Stable tree hash (excludes 'focused', timestamps)
+redaction.py          # Pattern matching + text/tree/OCR/screenshot redaction
+budgets.py            # Counter store, decorator
+audit.py              # Append-only audit logger
+tracing.py            # Trace recording (writer thread, JSONL + screenshots)
+replay.py             # Trace replay (execute / verify, comparison table)
+scenarios.py          # YAML loader, scenario state machine, scenario adapter
+oracles.py            # assert_state predicates
+tools.py              # Central tool implementations (callable from REST + MCP)
+mac_adapter.py        # macOS pyobjc AX adapter (split out for size)
+linux_adapter.py      # Linux pyatspi AT-SPI adapter
+observer.py           # +window_uid, +get_monitors, +ElementOccluded check
+mcp_server.py         # +new tool schemas, dispatch into tools.py
+web_inspector.py      # +new REST routes
+main.py               # +CLI flags for budgets, scenarios, redaction
+description.py        # +max_tokens / focus_element / mode=auto support
+config.json           # +new config blocks
+requirements.txt      # +PyYAML; pyobjc/pyatspi documented as platform-optional
+requirements-dev.txt  # pytest, pytest-cov, ruff
+.github/workflows/ci.yml
+tests/
+  __init__.py
+  conftest.py
+  test_selectors.py
+  test_diff.py
+  test_hashing.py
+  test_redaction.py
+  test_session.py
+  test_scenarios.py
+  test_oracles.py
+  test_tracing.py
+  test_replay.py
+  test_tools_mock.py
+screen_observer_api_reference.md   # updated
 ```
 
-Agents call this once at session start and adapt their tool selection.
-Harnesses check it before running platform-specific scenarios.
+Approximately 5–7 kLOC end state.
 
 ---
 
-## 24. Multi-monitor / DPI
+## 26. Phasing & acceptance
 
-`list_windows` adds:
-
-```jsonc
-{
-  "monitor_index": 1,
-  "monitor_bounds": {"x":-1920,"y":0,"width":1920,"height":1080},
-  "scale_factor": 1.5,
-  "logical_bounds":  {"x":0,"y":0,"width":1280,"height":720},
-  "physical_bounds": {"x":0,"y":0,"width":1920,"height":1080}
-}
-```
-
-A new `get_monitors()` tool enumerates all monitors. Coordinates passed to
-`click_at` are documented as **physical** pixels by default; a
-`coordinate_space: "logical"` parameter is accepted for high-DPI safety.
-
----
-
-## 25. Audit log
-
-Append-only log at `audit.log` (path configurable). Format:
-
-```text
-2026-05-10T14:05:01.234Z step=42 caller=mcp:claude-desktop tool=click_element
-  args.window_uid=win:1234:0xabc args.element_id=17 ok=true changed=true
-  redactions=[args.text]
-```
-
-One line per call. Args are serialized after redaction. Distinct from
-traces: traces are per-session and JSONL; the audit log is process-lifetime
-and human-readable, never truncated.
-
-Configurable rotation (`logging.audit_max_bytes`, `audit_backups`). Off by
-default; opt-in via `logging.audit: true`.
-
----
-
-## 26. Headless / CI mode
-
-Document and ship:
-
-1. `docs/ci.md` (new) covering the full Xvfb recipe for Linux.
-2. `Dockerfile.ci` running `python main.py --mock --scenario … --mode both`
-   on top of `python:3.11-slim` plus `wmctrl`. No GUI required.
-3. `docker-compose.ci.yml` wiring the server alongside an agent harness
-   container, sharing a volume for traces.
-4. A `--no-action-side-effects` flag that forces every input tool into
-   `dry_run` (useful when running scenarios that exist only to test the
-   agent's plan).
-
----
-
-## 27. Telemetry & observability (minor)
-
-- `/api/healthz` — `{ok, uptime_s, adapter, version}`.
-- `/api/metrics` — Prometheus-format counters: tool calls, errors per code,
-  trace bytes written, OCR latency p50/p95, VLM tokens. Off by default.
-- `step_id` and `tool` propagate to the existing `logger` so log scrapers
-  can correlate.
-
----
-
-## 28. Phasing
-
-The list is long; this is the proposed rollout order. Each phase is
-independently shippable and additive (no breaking changes — see §29).
-
-| Phase | Includes | Rationale |
+| Phase | Scope | Acceptance |
 |---|---|---|
-| **P1 — Identity & receipts** | §5 (`window_uid`, selectors), §6 (element actions), §22 (error taxonomy), §19 (step_id) | Foundation everything else builds on. Biggest reliability win for agents. |
-| **P2 — Sync & diff** | §10 (`wait_for`, `wait_idle`), §11 (observe-diff), §12 (composite tools), §13 (snapshots) | Biggest token / latency win. Cheap relative to P1. |
-| **P3 — Filters & crops** | §8 (tree filtering), §9 (cropping, budgeting, region OCR), §24 (multi-monitor) | Quality-of-life. Independent of P1/P2. |
-| **P4 — Harness substrate** | §14 (trace), §15 (replay), §16 (scenarios), §17 (oracles), §26 (CI) | Unblocks CI evaluation. Largest in scope. |
-| **P5 — Safety** | §18 (budgets), §20 (redaction), §21 (dry-run / allowlist / confirm), §25 (audit) | Required before exposing to untrusted agents. Can ship piecemeal. |
-| **P6 — Misc** | §7 (extra verbs), §23 (capabilities), §27 (telemetry) | Polish. |
+| **P1** | window_uid, selectors, element actions, error taxonomy, step IDs, capabilities, ActionReceipt, monitors | All new tools exposed on REST + MCP. Mock-mode tests for selector parser, find_element happy path + ambiguous, click_element happy + ElementNotFound + ElementDisabled, capabilities. |
+| **P2** | wait_for, wait_idle, observe-with-diff (custom + JSON Patch), composite tools, snapshots, snapshot_diff | Diff round-trip tests; wait_for happy + timeout; composite tool returns receipt + observation. |
+| **P3** | tree filtering, paging, screenshot crop, get_ocr, description budgeting, mode=auto | Filter test (roles, prune_empty); paging cursor stability test; crop test under mock. |
+| **P4** | tracing, replay (execute + verify), scenarios (YAML loader + state machine + scenario adapter), oracles | Round-trip test: scenario → run agent moves → trace → replay verify with zero divergence. Oracle predicate tests. |
+| **P5** | budgets, redaction, dry_run, allowlist, confirmation tokens, audit log | Budget trip test; redaction test for tree/OCR; dry_run does not invoke; confirmation flow happy + invalid. |
+| **P6** | extra input verbs, telemetry, capabilities polish, real adapter polish | Verbs tested under mock; healthz/metrics smoke test. |
 
-If only three phases get built, P1 + P2 + P4 deliver the majority of the
-value: reliable agents, cheap loops, replayable evals.
-
----
-
-## 29. Migration & backwards compatibility
-
-- `window_index` keeps working. Tools accept either `window_index` or
-  `window_uid`; if both are present, `window_uid` wins.
-- Existing endpoints' response shapes are extended, not replaced. New
-  fields (`window_uid`, `step_id`, `error.code`) are additive.
-- `success: true` style responses remain on legacy endpoints; new endpoints
-  use `ok: true` to make the distinction visible.
-- The MCP `_TOOLS` table grows; existing tool schemas are unchanged
-  (parameters can be added with defaults so older clients keep working).
-- A new top-level `protocol_version` in `get_capabilities()` lets harness
-  authors gate features cleanly.
+Each phase ships as one or more git commits on
+`claude/plan-agentic-llm-features-82sCL`, never in parallel branches.
 
 ---
 
-## 30. Open questions
+## 27. Migration & backwards compatibility
 
-1. **Selector grammar.** Adopt CSS-like syntax (familiar to web devs) vs.
-   XPath-like (familiar to UIA tooling) vs. our own. The draft above is a
-   simplified XPath. Pick one before P1 ships.
-2. **Diff format.** RFC 6902 JSON Patch vs. the custom `{op, path, …}`
-   shape sketched in §11. JSON Patch has libraries; the custom shape is
-   more readable and lets us include `move` cheaply.
-3. **Scenario language.** YAML (readable, popular) vs. Python (full
-   expressiveness, no DSL to learn) vs. JSON (zero-dep). YAML is the draft;
-   revisit if reactions need real logic.
-4. **Trace storage.** Local JSONL only, or pluggable backends (SQLite,
-   S3)? Defer to harness needs; keep the file-writing layer behind an
-   interface.
-5. **Confirmation token UX.** Should the server expose a separate
-   "preview" endpoint that returns the bbox + screenshot of the would-be
-   target, so a human-in-the-loop can confirm visually? Probably yes for
-   P5, but it's outside the strict agent flow.
-6. **Selector ambiguity policy.** When `find_element` matches >1 node:
-   error vs. return the first vs. return all. Draft picks "return first +
-   `ambiguous_matches` count"; revisit if it causes silent mistakes.
-7. **VLM cost accounting.** §18 caps VLM tokens, but the cap counts only
-   request tokens (we don't see Anthropic's response tokens until after).
-   Approximate by `max_tokens` parameter — accept the small over-count.
+- `window_index` keeps working everywhere. New tools accept either, prefer
+  `window_uid` when both are given.
+- All response shapes are extended, not replaced. `success`/`error` (string)
+  are emitted alongside `ok`/`error` (object), per D5.
+- Existing MCP tool schemas are unchanged; all new params have defaults.
+- `protocol_version: 2` in `get_capabilities()`. Today's behavior is
+  protocol v1.
 
 ---
 
-## 31. Out of scope (explicitly)
+## 28. Out of scope
 
-- Non-OS surfaces: web pages via DevTools, Android/iOS device farms,
-  remote VMs.
-- LLM choice: this server stays model-agnostic. The current Anthropic VLM
-  integration is one description backend, not the system's identity.
-- A built-in agent loop. `window_agent.py` is illustrative; harness authors
-  bring their own controller.
+- Cross-machine remoting; sandbox/container orchestration; IDE plugins.
+- Browser DOM access through DevTools.
+- A new agent runtime.
+- Localization of selector predicates / oracles.
 
 ---
 
-## 32. Acceptance criteria per phase
+## 29. Implementation policy
 
-A phase is "done" when:
-
-- All new tools are exposed on **both** REST and MCP.
-- All new tools work under `--mock` (P4 makes this stronger via scenarios).
-- `screen_observer_api_reference.md` is updated with request/response
-  schemas and at least one example per tool.
-- An end-to-end test in the existing test layout (or a new
-  `tests/agentic/` directory) exercises the happy path and at least one
-  error code per new tool.
-- Trace + replay (after P4) round-trips at least one realistic scenario
-  with zero divergences.
+- Every public function: type hints; docstring summarizes contract; no
+  multi-paragraph docs.
+- Errors produced via `errors.Error.raise_or_dict(...)`, never bare strings.
+- Every new tool has at least one mock-mode test.
+- No new dependency without justification in commit message.
+- Keep modules under ~600 LOC; split when growing past that.
+- All file paths in code use absolute paths to `os.path.join(repo_root, …)`
+  to keep tests hermetic.
