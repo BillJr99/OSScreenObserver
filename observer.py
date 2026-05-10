@@ -644,6 +644,21 @@ class ScreenObserver:
     def get_screenshot(self, hwnd=None) -> Optional[bytes]:
         return self._adapter.get_screenshot(hwnd)
 
+    def get_full_display_screenshot(self) -> Optional[bytes]:
+        """Capture the entire virtual desktop (all monitors combined) as a PNG."""
+        try:
+            import mss
+            from PIL import Image
+            with mss.mss() as sct:
+                raw = sct.grab(sct.monitors[0])   # 0 = union of all monitors
+                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                buf = io.BytesIO()
+                img.save(buf, "PNG")
+                return buf.getvalue()
+        except Exception as e:
+            logger.warning(f"[ScreenObserver:get_full_display_screenshot] {e}; falling back")
+            return self._adapter.get_screenshot()
+
     def perform_action(self, action: str, element_id: str = None,
                        value: Any = None, hwnd=None) -> Dict:
         return self._adapter.perform_action(action, element_id, value, hwnd)

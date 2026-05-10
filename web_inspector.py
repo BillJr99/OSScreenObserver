@@ -774,19 +774,20 @@ def create_web_app(
 
     @app.route("/api/full_screenshot")
     def api_full_screenshot():
-        """Screenshot + ASCII sketch in one call (sketch uses OCR overlay)."""
+        """All-monitor screenshot + optional ASCII sketch in one call."""
         try:
             info, hwnd, _ = _window_from_args()
-            shot = observer.get_screenshot(hwnd)
+            # Always capture the full virtual desktop (all monitors combined)
+            shot = observer.get_full_display_screenshot()
             if shot is None:
                 return jsonify({"error": "Screenshot capture failed"}), 500
 
             sketch: Optional[str] = None
-            tree = observer.get_element_tree(hwnd)
+            tree = observer.get_element_tree(hwnd) if hwnd is not None else None
             if tree is not None:
                 gw  = request.args.get("grid_width",  type=int)
                 gh  = request.args.get("grid_height", type=int)
-                ref = info.bounds if info else tree.bounds
+                ref = info.bounds if info else observer._get_screen_bounds()
                 sketch = renderer.render(
                     root             = tree,
                     screen_bounds    = ref,

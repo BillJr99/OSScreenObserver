@@ -188,10 +188,12 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         return api_description(rest, wi, mode)
 
     elif tool_name == "get_screen_sketch":
-        return api_sketch(rest, wi,
-                          args.get("grid_width"),
-                          args.get("grid_height"),
-                          ocr=bool(args.get("ocr", False)))
+        raw_ocr = args.get("ocr", False)
+        if isinstance(raw_ocr, str):
+            ocr = raw_ocr.strip().lower() not in ("", "false", "0", "no")
+        else:
+            ocr = bool(raw_ocr)
+        return api_sketch(rest, wi, args.get("grid_width"), args.get("grid_height"), ocr=ocr)
 
     elif tool_name == "get_screenshot":
         result = api_screenshot(rest, wi)
@@ -424,10 +426,30 @@ SCREEN_TOOLS: List[Dict] = [
     {
         "type": "function",
         "function": {
+            "name": "scroll",
+            "description": (
+                "Scroll the mouse wheel at a given screen position. "
+                "Positive clicks scrolls up/forward; negative scrolls down/backward."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clicks":       {"type": "integer", "description": "Scroll amount (positive = up, negative = down). Default: 3."},
+                    "x":            {"type": "integer", "description": "Screen X coordinate to scroll at (optional)."},
+                    "y":            {"type": "integer", "description": "Screen Y coordinate to scroll at (optional)."},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_full_screenshot",
             "description": (
-                "Capture a screenshot AND render an ASCII sketch of a window in one call. "
-                "The sketch uses OCR overlay for higher fidelity text. "
+                "Capture the entire display (all monitors combined) as a screenshot, "
+                "and if a window_index is given also render its ASCII sketch with OCR overlay. "
                 "Screenshot pixel data is omitted from the tool result; the sketch is included. "
                 "Prefer this over separate get_screenshot + get_screen_sketch calls."
             ),
@@ -490,6 +512,9 @@ If an action does not produce the expected result, do not repeat it;
 re-observe and try an alternative approach.
 """
 
+# OpenWebUI OpenAI-compatible API prefix (centralised so both endpoints stay in sync)
+_OWU_PREFIX = "/api/v1"
+
 # ─── LLM client (OpenAI-compatible, OpenWebUI) ────────────────────────────────
 
 class LLMClient:
@@ -509,7 +534,7 @@ class LLMClient:
         headers = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        return _post(self.base_url, "/api/v1/chat/completions", payload, headers, timeout=120)
+        return _post(self.base_url, f"{_OWU_PREFIX}/chat/completions", payload, headers, timeout=120)
 
 # ─── Agentic loop ─────────────────────────────────────────────────────────────
 
@@ -740,24 +765,25 @@ def prompt(msg: str, default: str = "", secret: bool = False) -> str:
     return val if val else default
 
 
-def ask_connection() -> Tuple[str, str, str]:
+def ask_connection() -> Tuple[str, str]:
     """Interactively collect OpenWebUI connection parameters (model chosen after fetch)."""
     print(_c("\n  ── OpenWebUI / LLM Connection ──────────────────────────────\n", "bold"))
     base_url = prompt("  OpenWebUI base URL", "http://localhost:3000")
     api_key  = prompt("  API key (leave blank if none)", secret=True)
-    return base_url, api_key, ""
+    return base_url, api_key
 
 
-def pick_model(models: List[str], fallback: str = "llama3.2:3b") -> str:
+def pick_model(models: List[str]) -> str:
     """Display a numbered menu of *models* and return the chosen model id."""
+    default = models[0]
     print(_c("\n  Available models:\n", "bold"))
     for i, m in enumerate(models):
         print(_c(f"    {i + 1:>3}. ", "yellow") + m)
     print()
     while True:
-        raw = input(_c("  Select model (number or name): ", "bold", "cyan")).strip()
+        raw = input(_c(f"  Select model (number or name) [{default}]: ", "bold", "cyan")).strip()
         if not raw:
-            return fallback
+            return default
         if raw.isdigit():
             idx = int(raw) - 1
             if 0 <= idx < len(models):
@@ -766,28 +792,26 @@ def pick_model(models: List[str], fallback: str = "llama3.2:3b") -> str:
         elif raw in models:
             return raw
         else:
-            # Accept free-text entry for models not in the list
             confirm = input(_c(f"  '{raw}' not in list — use it anyway? [y/N] ", "yellow")).strip().lower()
             if confirm == "y":
                 return raw
 
 
-def list_models(llm_base: str, api_key: str) -> List[str]:
-    """Try to fetch model list from /api/v1/models. Returns empty list on failure."""
+def list_models(llm_base: str, api_key: str) -> Tuple[List[str], Optional[str]]:
+    """Fetch model list from /api/v1/models. Returns (models, error_message)."""
     try:
         headers: Dict[str, str] = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         req = urllib.request.Request(
-            llm_base.rstrip("/") + "/api/v1/models",
+            llm_base.rstrip("/") + f"{_OWU_PREFIX}/models",
             headers=headers,
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
-        return [m["id"] for m in data.get("data", [])]
+        return [m["id"] for m in data.get("data", [])], None
     except Exception as e:
-        print(_c(f" failed ({e})", "red"))
-        return []
+        return [], str(e)
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
@@ -810,15 +834,15 @@ def main() -> None:
         sys.exit(1)
 
     # ── 2. LLM connection ─────────────────────────────────────────────────────
-    llm_base, api_key, _ = ask_connection()
+    llm_base, api_key = ask_connection()
 
     print(_c(f"\n  Checking connection to {llm_base} …", "dim"), end="", flush=True)
-    models = list_models(llm_base, api_key)
+    models, err = list_models(llm_base, api_key)
     if models:
         print(_c(f" OK  ({len(models)} model(s) available)", "green"))
         model = pick_model(models)
     else:
-        print(_c(" (could not list models)", "yellow"))
+        print(_c(f" failed — {err}", "yellow"))
         model = prompt("  Model name", "llama3.2:3b")
 
     llm = LLMClient(llm_base, api_key, model)

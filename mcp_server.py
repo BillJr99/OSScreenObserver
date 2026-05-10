@@ -460,14 +460,15 @@ class MCPServer:
 
     def _t_full_screenshot(self, hwnd, info, args) -> Dict:
         import base64
-        shot = self.observer.get_screenshot(hwnd)
+        # Always capture all monitors combined
+        shot = self.observer.get_full_display_screenshot()
         if shot is None:
             return {"error": "Screenshot capture failed"}
 
         sketch = None
-        tree = self.observer.get_element_tree(hwnd)
+        tree = self.observer.get_element_tree(hwnd) if hwnd is not None else None
         if tree is not None:
-            ref = info.bounds if info else tree.bounds
+            ref = info.bounds if info else self.observer._get_screen_bounds()
             sketch = self.renderer.render(
                 root             = tree,
                 screen_bounds    = ref,
