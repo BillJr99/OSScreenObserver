@@ -1027,6 +1027,49 @@ def create_web_app(
     def api_element_select():
         return _tool_response("select_option", request.get_json(force=True) or {})
 
+    # ── P2: observe-with-diff, snapshots, wait_for ──────────────────────────
+
+    @app.route("/api/observe")
+    def api_observe():
+        return _tool_response("observe_window", _merge_query())
+
+    @app.route("/api/snapshot", methods=["POST"])
+    def api_snapshot():
+        return _tool_response("snapshot", request.get_json(silent=True) or {})
+
+    @app.route("/api/snapshot/<sid>")
+    def api_snapshot_get(sid: str):
+        return _tool_response("snapshot_get", {"snapshot_id": sid})
+
+    @app.route("/api/snapshot/diff", methods=["POST"])
+    def api_snapshot_diff():
+        return _tool_response("snapshot_diff", request.get_json(force=True) or {})
+
+    @app.route("/api/snapshot/<sid>", methods=["DELETE"])
+    def api_snapshot_drop(sid: str):
+        return _tool_response("snapshot_drop", {"snapshot_id": sid})
+
+    @app.route("/api/wait_for", methods=["POST"])
+    def api_wait_for():
+        return _tool_response("wait_for", request.get_json(force=True) or {})
+
+    @app.route("/api/wait_idle", methods=["POST"])
+    def api_wait_idle():
+        return _tool_response("wait_idle", request.get_json(force=True) or {})
+
+    @app.route("/api/element/click_and_observe", methods=["POST"])
+    def api_element_click_observe():
+        return _tool_response("click_element_and_observe",
+                               request.get_json(force=True) or {})
+
+    @app.route("/api/type_and_observe", methods=["POST"])
+    def api_type_observe():
+        return _tool_response("type_and_observe", request.get_json(force=True) or {})
+
+    @app.route("/api/key_and_observe", methods=["POST"])
+    def api_key_observe():
+        return _tool_response("press_key_and_observe", request.get_json(force=True) or {})
+
     @app.route("/api/healthz")
     def api_healthz():
         from session import get_session

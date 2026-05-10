@@ -432,6 +432,160 @@ _TOOLS: List[Dict] = [
             "required": [],
         },
     },
+
+    # ── P2: sync, observe-with-diff, snapshots, composites ──────────────────
+
+    {
+        "name": "observe_window",
+        "description": (
+            "Return the current accessibility tree of a window.  Pass a "
+            "tree_token from a previous observation as 'since' to get only "
+            "what changed (custom diff format by default; pass "
+            "format='json-patch' for RFC 6902).  An expired token returns the "
+            "full tree with base_token=null."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "since":        {"type": "string"},
+                "format":       {"type": "string", "enum": ["custom", "json-patch"]},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "snapshot",
+        "description": (
+            "Capture the current state of all windows + their accessibility "
+            "trees and return a snapshot_id.  TTL 5 minutes; LRU 32."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "snapshot_get",
+        "description": "Retrieve a previously captured snapshot by id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"snapshot_id": {"type": "string"}},
+            "required": ["snapshot_id"],
+        },
+    },
+    {
+        "name": "snapshot_diff",
+        "description": (
+            "Compare two snapshots.  Returns added/removed windows plus a "
+            "per-window tree diff (custom format by default)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "a":      {"type": "string"},
+                "b":      {"type": "string"},
+                "format": {"type": "string", "enum": ["custom", "json-patch"]},
+            },
+            "required": ["a", "b"],
+        },
+    },
+    {
+        "name": "snapshot_drop",
+        "description": "Free a snapshot before its TTL expires.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"snapshot_id": {"type": "string"}},
+            "required": ["snapshot_id"],
+        },
+    },
+    {
+        "name": "wait_for",
+        "description": (
+            "Block (with polling) until any of the given conditions matches "
+            "or timeout_ms elapses.  Conditions: element_appears, "
+            "element_disappears, text_visible, window_appears, "
+            "window_disappears, tree_changes (with since=tree_token), "
+            "focused_changes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "any_of":     {"type": "array"},
+                "window_uid": {"type": "string"},
+                "timeout_ms": {"type": "integer"},
+                "poll_ms":    {"type": "integer"},
+            },
+            "required": ["any_of"],
+        },
+    },
+    {
+        "name": "wait_idle",
+        "description": (
+            "Block until the tree hash has been stable for quiet_ms (default "
+            "750) or timeout_ms is reached.  Useful as a 'page settled' check."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "quiet_ms":     {"type": "integer"},
+                "timeout_ms":   {"type": "integer"},
+                "poll_ms":      {"type": "integer"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "click_element_and_observe",
+        "description": (
+            "Click an element, sleep wait_after_ms, then observe the window "
+            "with since=<previous tree_token if supplied>.  One round-trip "
+            "instead of two."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":      {"type": "string"},
+                "element_id":    {"type": "string"},
+                "window_uid":    {"type": "string"},
+                "window_index":  {"type": "integer"},
+                "button":        {"type": "string"},
+                "count":         {"type": "integer"},
+                "wait_after_ms": {"type": "integer"},
+                "since":         {"type": "string"},
+                "dry_run":       {"type": "boolean"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "type_and_observe",
+        "description": "type_text + observe_window in one call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text":          {"type": "string"},
+                "wait_after_ms": {"type": "integer"},
+                "since":         {"type": "string"},
+                "window_uid":    {"type": "string"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "press_key_and_observe",
+        "description": "press_key + observe_window in one call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "keys":          {"type": "string"},
+                "wait_after_ms": {"type": "integer"},
+                "since":         {"type": "string"},
+                "window_uid":    {"type": "string"},
+            },
+            "required": ["keys"],
+        },
+    },
 ]
 
 
