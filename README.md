@@ -267,9 +267,8 @@ is fully off-screen or completely covered, the list is empty.
 
 ### `GET /api/bring_to_foreground`
 
-Raises a window by clicking in its title-bar area. The server computes the
-visible (non-occluded) region of the window, then clicks near the top-centre
-of that region (typically ~20 px below the top edge, where the title bar is):
+Raises a window by clicking in its title-bar area. The server selects the
+top-most visible region of the window and clicks ~20 px below its top edge:
 
 ```json
 {
@@ -281,9 +280,16 @@ of that region (typically ~20 px below the top edge, where the title bar is):
 }
 ```
 
-`window_index` is required. If the window has no visible area (fully covered
-or off-screen) the response will contain `"success": false` with an error
-message.
+`window_index` is required. If the window has no visible area the response
+contains `"success": false` with an explanatory error message — the click is
+**not** attempted in that case.
+
+**Platform notes**
+
+| Platform | Occlusion detection |
+|----------|---------------------|
+| Windows  | Real Z-order via `win32gui`: a fully-covered window returns `success: false` |
+| macOS / Linux | Z-order unavailable; the window is assumed to be on top, so the screen-clipped bounds are used. A fully-covered window may still produce a click that lands on the covering window. |
 
 ---
 
