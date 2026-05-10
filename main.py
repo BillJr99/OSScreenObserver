@@ -121,6 +121,18 @@ examples:
                    help="Override web UI port from config")
     p.add_argument("--host",
                    help="Override web UI bind host from config")
+    p.add_argument("--scenario",
+                   help="Load a YAML scenario file (requires --mock)")
+    p.add_argument("--max-actions", type=int,
+                   help="Cap total input actions; further actions return BudgetExceeded")
+    p.add_argument("--max-screenshots", type=int,
+                   help="Cap total screenshot captures")
+    p.add_argument("--max-vlm-tokens", type=int,
+                   help="Cap total VLM tokens")
+    p.add_argument("--max-session-seconds", type=int,
+                   help="Cap session wall-clock seconds")
+    p.add_argument("--actions-per-minute", type=int,
+                   help="Sliding-window actions per minute limit")
     return p
 
 
@@ -165,6 +177,32 @@ def main() -> None:
 
     adapter_type = "MOCK" if observer.is_mock else "LIVE"
     logger.info(f"[main] Observer ready (adapter: {adapter_type})")
+
+    # ── Scenario (mock-only) ────────────────────────────────────────────────
+    if args.scenario:
+        if not observer.is_mock:
+            print(f"[main] --scenario requires --mock; ignoring", file=sys.stderr)
+        else:
+            try:
+                import scenarios as _scn
+                sc = _scn.load(args.scenario)
+                _scn.attach_to_observer(sc, observer)
+                logger.info(f"[main] Scenario loaded: {sc.name} (state={sc.current_state})")
+            except Exception as e:
+                print(f"[main] Failed to load scenario: {e}", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                sys.exit(1)
+
+    # ── Budget configuration (P5) ───────────────────────────────────────────
+    try:
+        from budgets import BudgetStore
+        from session import get_session
+        bs = BudgetStore.from_args(args)
+        if bs is not None:
+            get_session().budgets = bs
+            logger.info(f"[main] Budgets configured: {bs.summary()}")
+    except Exception as e:
+        logger.warning(f"[main] Budget setup skipped: {e}")
 
     # ── Web inspector ────────────────────────────────────────────────────────
     if args.mode in ("inspect", "both"):

@@ -417,6 +417,7 @@ def click_element(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         cx, cy = elem.bounds.center_x, elem.bounds.center_y
         result = ctx.observer.perform_action(
             "click_at",
+            element_id=elem.element_id,
             value={"x": cx, "y": cy, "button": button,
                    "double": (count >= 2)},
             hwnd=info.handle,
@@ -1459,13 +1460,266 @@ REGISTRY: Dict[str, Callable[[ToolContext, Dict[str, Any]], Dict[str, Any]]] = {
     "get_screen_description":  get_screen_description,
 }
 
+# Forward-declared P4 entries appended after definitions (below).
+
+
+# ─── P4: tracing, replay, scenarios, oracles ─────────────────────────────────
+
+def trace_start(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import tracing as _tracing
+    step_id, caused_by = _new_step_id("trace_start")
+    sess = get_session()
+    if sess.active_trace is not None and not sess.active_trace.closed:
+        return error_dict(Code.BAD_REQUEST, "trace already active",
+                          step_id=step_id,
+                          trace_id=sess.active_trace.trace_id)
+    handle = _tracing.start(label=args.get("label", ""), config=ctx.config)
+    sess.active_trace = handle
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "trace_id": handle.trace_id,
+        "started_at": handle.started_at,
+        "dir": handle.dir,
+    }
+
+
+def trace_stop(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import tracing as _tracing
+    step_id, caused_by = _new_step_id("trace_stop")
+    sess = get_session()
+    if sess.active_trace is None:
+        return error_dict(Code.BAD_REQUEST, "no active trace",
+                          step_id=step_id)
+    info = _tracing.stop(sess.active_trace)
+    sess.active_trace = None
+    info.update({"ok": True, "success": True,
+                 "step_id": step_id, "caused_by_step_id": caused_by})
+    return info
+
+
+def trace_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    step_id, caused_by = _new_step_id("trace_status")
+    sess = get_session()
+    if sess.active_trace is None:
+        return {"ok": True, "success": True,
+                "step_id": step_id, "caused_by_step_id": caused_by,
+                "active_trace_id": None, "step_count": 0, "dir": None}
+    h = sess.active_trace
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "active_trace_id": h.trace_id,
+        "step_count": h.counter.value,
+        "dir": h.dir,
+    }
+
+
+# ─── Replay state ────────────────────────────────────────────────────────────
+
+_REPLAYS: Dict[str, Any] = {}
+
+
+def replay_start(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import replay as _replay
+    step_id, caused_by = _new_step_id("replay_start")
+    path = args.get("path")
+    if not path:
+        return error_dict(Code.BAD_REQUEST, "path is required",
+                          step_id=step_id)
+    mode = args.get("mode", "execute")
+    on_div = args.get("on_divergence", "warn")
+    try:
+        rep = _replay.load(path, mode=mode, on_divergence=on_div)
+    except Exception as e:
+        return error_dict(Code.BAD_REQUEST, f"could not load trace: {e}",
+                          step_id=step_id, path=path)
+    handle_id = "rep:" + str(len(_REPLAYS) + 1)
+    _REPLAYS[handle_id] = rep
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "replay_id": handle_id,
+        "total": len(rep.rows),
+        "mode": rep.mode,
+        "label": rep.label,
+    }
+
+
+def replay_step(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import replay as _replay
+    step_id, caused_by = _new_step_id("replay_step")
+    rid = args.get("replay_id")
+    rep = _REPLAYS.get(rid)
+    if rep is None:
+        return error_dict(Code.BAD_REQUEST, "unknown replay_id",
+                          step_id=step_id, replay_id=rid)
+
+    def _disp(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
+        return dispatch(ctx, name, a)
+
+    out = _replay.step(rep, dispatch=_disp)
+    out.update({"ok": True, "success": True,
+                "step_id": step_id, "caused_by_step_id": caused_by,
+                "replay_id": rid})
+    return out
+
+
+def replay_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    step_id, caused_by = _new_step_id("replay_status")
+    rid = args.get("replay_id")
+    rep = _REPLAYS.get(rid)
+    if rep is None:
+        return error_dict(Code.BAD_REQUEST, "unknown replay_id",
+                          step_id=step_id, replay_id=rid)
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "replay_id": rid,
+        "position": rep.position,
+        "total": len(rep.rows),
+        "finished": rep.finished,
+        "divergences": rep.divergences,
+        "mode": rep.mode,
+    }
+
+
+def replay_stop(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    step_id, caused_by = _new_step_id("replay_stop")
+    rid = args.get("replay_id")
+    if rid in _REPLAYS:
+        _REPLAYS.pop(rid)
+        return {"ok": True, "success": True,
+                "step_id": step_id, "caused_by_step_id": caused_by,
+                "stopped": True}
+    return error_dict(Code.BAD_REQUEST, "unknown replay_id",
+                      step_id=step_id, replay_id=rid)
+
+
+# ─── Scenarios ───────────────────────────────────────────────────────────────
+
+def load_scenario(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import scenarios as _scn
+    step_id, caused_by = _new_step_id("load_scenario")
+    path = args.get("path")
+    if not path:
+        return error_dict(Code.BAD_REQUEST, "path is required",
+                          step_id=step_id)
+    try:
+        sc = _scn.load(path)
+        _scn.attach_to_observer(sc, ctx.observer)
+    except _scn.ScenarioError as e:
+        return error_dict(Code.SCENARIO_INVALID, str(e),
+                          step_id=step_id, path=path)
+    except Exception as e:
+        return error_dict(Code.SCENARIO_INVALID, f"{type(e).__name__}: {e}",
+                          step_id=step_id, path=path)
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "scenario": sc.name,
+        "state": sc.current_state,
+        "states": list(sc.states.keys()),
+    }
+
+
+# ─── Oracles ─────────────────────────────────────────────────────────────────
+
+def assert_state(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    import oracles as _oracles
+    step_id, caused_by = _new_step_id("assert_state")
+    pred = args.get("predicate") or args.get("predicates") or []
+    out = _oracles.evaluate(ctx.observer, pred, config=ctx.config)
+    if out.get("ok"):
+        out["step_id"] = step_id
+        out["caused_by_step_id"] = caused_by
+    return out
+
+
+REGISTRY.update({
+    "trace_start":     trace_start,
+    "trace_stop":      trace_stop,
+    "trace_status":    trace_status,
+    "replay_start":    replay_start,
+    "replay_step":     replay_step,
+    "replay_status":   replay_status,
+    "replay_stop":     replay_stop,
+    "load_scenario":   load_scenario,
+    "assert_state":    assert_state,
+})
+
 
 def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     fn = REGISTRY.get(name)
     if fn is None:
         return error_dict(Code.BAD_REQUEST, f"unknown tool: {name}")
+    started = time.time()
+    sess = get_session()
+    tree_before = ""
+    if sess.active_trace is not None and not sess.active_trace.closed:
+        try:
+            windows0 = ctx.observer.list_windows()
+            focused0 = next((w for w in windows0 if w.is_focused), None)
+            if focused0:
+                t = ctx.observer.get_element_tree(focused0.handle)
+                if t:
+                    tree_before = tree_hash(t)
+        except Exception:
+            pass
+
     try:
-        return fn(ctx, args or {})
+        result = fn(ctx, args or {})
     except Exception as e:
         logger.exception(f"tool {name} crashed")
-        return error_dict(Code.INTERNAL, f"{type(e).__name__}: {e}")
+        result = error_dict(Code.INTERNAL, f"{type(e).__name__}: {e}")
+
+    duration_ms = int((time.time() - started) * 1000)
+
+    # Recurse-safety: don't trace meta tools that would recurse forever.
+    if name not in {"trace_start", "trace_stop", "trace_status",
+                    "replay_start", "replay_step", "replay_status",
+                    "replay_stop"}:
+        if sess.active_trace is not None and not sess.active_trace.closed:
+            try:
+                import tracing as _tracing
+                shot_full = ctx.observer.get_full_display_screenshot()
+                shot_window = None
+                tgt_uid = None
+                tgt = result.get("target") or {}
+                tgt_uid = tgt.get("window_uid") or args.get("window_uid")
+                if tgt_uid:
+                    win = ctx.observer.window_by_uid(
+                        ctx.observer.list_windows(), tgt_uid)
+                    if win:
+                        shot_window = ctx.observer.get_screenshot(win.handle)
+                tree_after = ""
+                try:
+                    after_w = ctx.observer.list_windows()
+                    f = next((w for w in after_w if w.is_focused), None)
+                    if f:
+                        t = ctx.observer.get_element_tree(f.handle)
+                        if t:
+                            tree_after = tree_hash(t)
+                except Exception:
+                    pass
+                _tracing.record(
+                    sess.active_trace,
+                    tool=name, caller=args.get("_caller", "unknown"),
+                    args={k: v for k, v in (args or {}).items()
+                          if not k.startswith("_")},
+                    result=result, duration_ms=duration_ms,
+                    tree_hash_before=tree_before, tree_hash_after=tree_after,
+                    full_screenshot=shot_full,
+                    window_screenshot=shot_window,
+                )
+            except Exception:
+                logger.exception("trace.record failed")
+
+    # Audit log (no-op until P5 plumbs it in).
+    if sess.budgets is not None:
+        try:
+            sess.budgets.note(name, result)
+        except Exception:
+            pass
+
+    return result

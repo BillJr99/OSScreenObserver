@@ -613,6 +613,104 @@ _TOOLS: List[Dict] = [
             "required": [],
         },
     },
+    # ── P4: tracing, replay, scenarios, oracles ──────────────────────────────
+    {
+        "name": "trace_start",
+        "description": (
+            "Begin recording every tool call to traces/<trace_id>/trace.jsonl "
+            "with periodic full + per-window screenshots."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"label": {"type": "string"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "trace_stop",
+        "description": "Close the active trace; returns trace path and step_count.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "trace_status",
+        "description": "Report whether a trace is active and the current step count.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "replay_start",
+        "description": (
+            "Load a trace.jsonl (or directory containing one) and prepare to "
+            "replay it.  mode='execute' re-issues each call; mode='verify' "
+            "compares results using per-tool comparison rules and records "
+            "divergences."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path":          {"type": "string"},
+                "mode":          {"type": "string", "enum": ["execute", "verify"]},
+                "on_divergence": {"type": "string", "enum": ["stop", "warn", "resume"]},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "replay_step",
+        "description": "Advance one row of the active replay.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"replay_id": {"type": "string"}},
+            "required": ["replay_id"],
+        },
+    },
+    {
+        "name": "replay_status",
+        "description": "Report replay position, total, finished flag, divergences.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"replay_id": {"type": "string"}},
+            "required": ["replay_id"],
+        },
+    },
+    {
+        "name": "replay_stop",
+        "description": "Discard a replay handle and free its resources.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"replay_id": {"type": "string"}},
+            "required": ["replay_id"],
+        },
+    },
+    {
+        "name": "load_scenario",
+        "description": (
+            "Load a YAML scenario file and attach it to the mock adapter.  "
+            "Subsequent observations and actions are routed through the "
+            "scenario state machine.  Requires --mock."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "assert_state",
+        "description": (
+            "Evaluate a list of declarative predicates (AND).  Predicates: "
+            "element_exists, element_absent, value_equals, value_matches, "
+            "text_visible (mode=tree|ocr|auto), window_focused, "
+            "window_exists, tree_hash_equals, screenshot_similar."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "predicate":  {"type": "array"},
+                "predicates": {"type": "array"},
+            },
+            "required": [],
+        },
+    },
     {
         "name": "get_ocr",
         "description": (

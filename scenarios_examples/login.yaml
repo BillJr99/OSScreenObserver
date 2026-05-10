@@ -1,0 +1,66 @@
+name: login-happy-path
+initial_state: start
+
+states:
+  start:
+    windows:
+      - uid: mock:app
+        title: "Acme Login"
+        process: acme.exe
+        pid: 1234
+        bounds: {x: 100, y: 100, width: 800, height: 600}
+        tree:
+          role: Window
+          name: "Acme Login"
+          bounds: {x: 100, y: 100, width: 800, height: 600}
+          children:
+            - role: Edit
+              name: Username
+              id: u
+              value: ""
+              bounds: {x: 200, y: 200, width: 240, height: 24}
+            - role: Edit
+              name: Password
+              id: p
+              value: ""
+              bounds: {x: 200, y: 240, width: 240, height: 24}
+              secret: true
+            - role: Button
+              name: Login
+              id: btn
+              bounds: {x: 200, y: 280, width: 100, height: 28}
+
+  welcome:
+    windows:
+      - uid: mock:app
+        title: "Acme — Welcome"
+        process: acme.exe
+        pid: 1234
+        bounds: {x: 100, y: 100, width: 800, height: 600}
+        tree:
+          role: Window
+          name: "Acme — Welcome"
+          bounds: {x: 100, y: 100, width: 800, height: 600}
+          children:
+            - role: Text
+              name: "Hello, alice"
+              bounds: {x: 200, y: 200, width: 240, height: 24}
+
+reactions:
+  - on: {tool: type_text, target_id: u, text_regex: "(.+)"}
+    set:
+      - {id: u, value: "{text}"}
+  - on: {tool: type_text, target_id: p, text_regex: "(.+)"}
+    set:
+      - {id: p, value: "<filled>"}
+  - on: {tool: click_element, target_id: btn}
+    when:
+      - {id: u, value: "alice"}
+      - {id: p, value_not_empty: true}
+    transition_to: welcome
+
+oracles:
+  success:
+    - {kind: text_visible, regex: "Hello, alice"}
+  failure:
+    - {kind: window_exists, title_regex: "Error"}

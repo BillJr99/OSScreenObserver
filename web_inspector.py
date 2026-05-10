@@ -950,31 +950,22 @@ def create_web_app(
 
     @app.route("/api/action", methods=["POST"])
     def api_action():
-        try:
-            body   = request.get_json(force=True) or {}
-            action = body.get("action", "")
-
-            if action == "click_at":
-                result = observer.perform_action(
-                    "click_at",
-                    value={"x": body.get("x", 0), "y": body.get("y", 0),
-                           "button": body.get("button", "left"),
-                           "double": body.get("double", False)},
-                )
-            elif action == "type":
-                result = observer.perform_action("type", value=body.get("value", ""))
-            elif action == "key":
-                result = observer.perform_action("key", value=body.get("value", ""))
-            elif action == "scroll":
-                result = observer.perform_action("scroll", value=body)
-            else:
-                return jsonify({"success": False, "error": f"Unknown action: {action}"}), 400
-
-            return jsonify(result)
-        except Exception as e:
-            print(f"[web_inspector:/api/action] {e}")
-            traceback.print_exc()
-            return jsonify({"success": False, "error": str(e)}), 500
+        body = request.get_json(force=True) or {}
+        action = body.get("action", "")
+        if action == "click_at":
+            return _tool_response("click_at", {
+                "x": body.get("x", 0), "y": body.get("y", 0),
+                "button": body.get("button", "left"),
+                "double": body.get("double", False),
+            })
+        if action == "type":
+            return _tool_response("type_text", {"text": body.get("value", "")})
+        if action == "key":
+            return _tool_response("press_key", {"keys": body.get("value", "")})
+        if action == "scroll":
+            return _tool_response("scroll", body)
+        return jsonify({"success": False, "ok": False,
+                        "error": f"Unknown action: {action}"}), 400
 
     # ── P1: identity, capabilities, element-targeted actions ─────────────────
 
@@ -1062,6 +1053,44 @@ def create_web_app(
     @app.route("/api/ocr")
     def api_ocr():
         return _tool_response("get_ocr", _merge_query())
+
+    # ── P4: tracing, replay, scenarios, oracles ─────────────────────────────
+
+    @app.route("/api/trace/start", methods=["POST"])
+    def api_trace_start():
+        return _tool_response("trace_start", request.get_json(silent=True) or {})
+
+    @app.route("/api/trace/stop", methods=["POST"])
+    def api_trace_stop():
+        return _tool_response("trace_stop", {})
+
+    @app.route("/api/trace/status")
+    def api_trace_status():
+        return _tool_response("trace_status", {})
+
+    @app.route("/api/replay/start", methods=["POST"])
+    def api_replay_start():
+        return _tool_response("replay_start", request.get_json(force=True) or {})
+
+    @app.route("/api/replay/step", methods=["POST"])
+    def api_replay_step():
+        return _tool_response("replay_step", request.get_json(force=True) or {})
+
+    @app.route("/api/replay/status", methods=["POST"])
+    def api_replay_status():
+        return _tool_response("replay_status", request.get_json(force=True) or {})
+
+    @app.route("/api/replay/stop", methods=["POST"])
+    def api_replay_stop():
+        return _tool_response("replay_stop", request.get_json(force=True) or {})
+
+    @app.route("/api/scenario/load", methods=["POST"])
+    def api_scenario_load():
+        return _tool_response("load_scenario", request.get_json(force=True) or {})
+
+    @app.route("/api/assert_state", methods=["POST"])
+    def api_assert_state():
+        return _tool_response("assert_state", request.get_json(force=True) or {})
 
     @app.route("/api/healthz")
     def api_healthz():
