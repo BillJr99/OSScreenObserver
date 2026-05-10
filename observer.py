@@ -691,6 +691,18 @@ class ScreenObserver:
     def __init__(self, config: dict):
         self.config = config
         self._adapter = self._select_adapter()
+        # Try to upgrade stub adapters to real AX implementations.
+        try:
+            if isinstance(self._adapter, MacOSAdapter):
+                import mac_adapter
+                if mac_adapter.install_into(self):
+                    logger.info("[ScreenObserver] mac_adapter installed (pyobjc)")
+            elif isinstance(self._adapter, LinuxAdapter):
+                import linux_adapter
+                if linux_adapter.install_into(self):
+                    logger.info("[ScreenObserver] linux_adapter installed (pyatspi)")
+        except Exception:
+            logger.exception("real adapter upgrade failed")
 
     def _select_adapter(self):
         if self.config.get("mock", False):
