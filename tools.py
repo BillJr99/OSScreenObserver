@@ -581,15 +581,54 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
     serialized = tree.to_dict()
     th = tree_hash(tree)
     token = get_session().tree_tokens.put(info.window_uid, serialized, th)
+
+    # P3 filtering / paging --------------------------------------------------
+    roles = args.get("roles")
+    exclude_roles = args.get("exclude_roles")
+    visible_only = bool(args.get("visible_only"))
+    name_regex = args.get("name_regex")
+    max_text_len = args.get("max_text_len")
+    prune_empty = bool(args.get("prune_empty"))
+    max_nodes = args.get("max_nodes")
+    page_cursor = args.get("page_cursor")
+
+    visible_regions: Optional[List[Dict[str, int]]] = None
+    if visible_only:
+        try:
+            visible_regions = ctx.observer.get_visible_areas(info.handle, windows)
+        except Exception:
+            visible_regions = []
+
+    filtered = _filter_tree(
+        serialized,
+        roles=set(roles) if roles else None,
+        exclude_roles=set(exclude_roles) if exclude_roles else None,
+        visible_regions=visible_regions,
+        name_regex=name_regex,
+        max_text_len=max_text_len,
+        prune_empty=prune_empty,
+    )
+
+    truncated = False
+    next_cursor: Optional[str] = None
+    node_count = _count_nodes(filtered) if filtered else 0
+    if max_nodes is not None or page_cursor is not None:
+        filtered, truncated, next_cursor, node_count = _page_tree(
+            filtered, max_nodes=max_nodes, page_cursor=page_cursor,
+        )
+
     return {
         "ok": True, "success": True,
         "step_id": step_id, "caused_by_step_id": caused_by,
         "window": info.title,
         "window_uid": info.window_uid,
         "element_count": len(tree.flat_list()),
-        "tree": serialized,
+        "node_count": node_count,
+        "tree": filtered,
         "tree_hash": th,
         "tree_token": token,
+        "truncated": truncated,
+        "next_cursor": next_cursor,
     }
 
 
@@ -1016,6 +1055,366 @@ def press_key_and_observe(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, A
     return receipt
 
 
+# ─── P3: tree filtering / paging helpers ─────────────────────────────────────
+
+def _filter_tree(node: Dict[str, Any], *, roles: Optional[set],
+                 exclude_roles: Optional[set],
+                 visible_regions: Optional[List[Dict[str, int]]],
+                 name_regex: Optional[str],
+                 max_text_len: Optional[int],
+                 prune_empty: bool) -> Optional[Dict[str, Any]]:
+    if node is None:
+        return None
+    role = node.get("role")
+    name = node.get("name") or ""
+    bounds = node.get("bounds") or {}
+
+    # Role filter
+    role_keep = True
+    if roles is not None and role not in roles:
+        role_keep = False
+    if exclude_roles is not None and role in exclude_roles:
+        role_keep = False
+
+    # Name regex
+    name_keep = True
+    if name_regex:
+        try:
+            name_keep = bool(re.search(name_regex, name))
+        except re.error:
+            name_keep = True
+
+    # Visibility
+    visible_keep = True
+    if visible_regions is not None:
+        visible_keep = _intersects_any(bounds, visible_regions)
+
+    self_keep = role_keep and name_keep and visible_keep
+
+    # Recurse children regardless (so we can keep ancestors if descendants match)
+    new_children: List[Dict[str, Any]] = []
+    for c in node.get("children", []) or []:
+        fc = _filter_tree(
+            c, roles=roles, exclude_roles=exclude_roles,
+            visible_regions=visible_regions, name_regex=name_regex,
+            max_text_len=max_text_len, prune_empty=prune_empty,
+        )
+        if fc is not None:
+            new_children.append(fc)
+
+    if prune_empty and not self_keep and not new_children:
+        return None
+
+    # Truncate text fields if requested.
+    truncated_node = dict(node)
+    if max_text_len is not None:
+        n = int(max_text_len)
+        if isinstance(truncated_node.get("name"), str) and len(truncated_node["name"]) > n:
+            truncated_node["name"] = truncated_node["name"][:n] + "…"
+        v = truncated_node.get("value")
+        if isinstance(v, str) and len(v) > n:
+            truncated_node["value"] = v[:n] + "…"
+    truncated_node["children"] = new_children
+    return truncated_node
+
+
+def _intersects_any(b: Dict[str, int], regions: List[Dict[str, int]]) -> bool:
+    if not b:
+        return False
+    bx, by = b.get("x", 0), b.get("y", 0)
+    bw, bh = b.get("width", 0), b.get("height", 0)
+    if bw <= 0 or bh <= 0:
+        return False
+    bx2, by2 = bx + bw, by + bh
+    for r in regions:
+        rx, ry = r.get("x", 0), r.get("y", 0)
+        rx2, ry2 = rx + r.get("width", 0), ry + r.get("height", 0)
+        if bx < rx2 and bx2 > rx and by < ry2 and by2 > ry:
+            return True
+    return False
+
+
+def _count_nodes(node: Optional[Dict[str, Any]]) -> int:
+    if node is None:
+        return 0
+    return 1 + sum(_count_nodes(c) for c in (node.get("children") or []))
+
+
+def _page_tree(node: Optional[Dict[str, Any]], *,
+               max_nodes: Optional[int],
+               page_cursor: Optional[str]
+               ) -> Tuple[Optional[Dict[str, Any]], bool, Optional[str], int]:
+    """
+    Paginated DFS walk.  Returns (subtree-shaped result containing only the
+    page slice, truncated flag, next_cursor, node_count_in_page).
+
+    Cursors are post-order element_ids; resuming starts from the next sibling
+    in the original walk.  This is a best-effort pager — if the tree changed,
+    callers will get SnapshotExpired-shaped semantics by virtue of an unknown
+    cursor returning truncated:false and node_count:0.
+    """
+    if node is None:
+        return None, False, None, 0
+    flat: List[Dict[str, Any]] = []
+    _flatten(node, flat)
+
+    if page_cursor is not None:
+        for i, n in enumerate(flat):
+            if n.get("id") == page_cursor:
+                flat = flat[i + 1:]
+                break
+        else:
+            return None, False, None, 0
+
+    if max_nodes is None or max_nodes >= len(flat):
+        # Return full (possibly trimmed) tree starting from cursor.
+        if page_cursor is None:
+            return node, False, None, len(flat)
+        return _flat_to_tree(flat), False, None, len(flat)
+
+    page = flat[:max_nodes]
+    truncated = True
+    next_cursor = page[-1].get("id") if page else None
+    return _flat_to_tree(page), truncated, next_cursor, len(page)
+
+
+def _flatten(node: Dict[str, Any], out: List[Dict[str, Any]]) -> None:
+    out.append(node)
+    for c in node.get("children") or []:
+        _flatten(c, out)
+
+
+def _flat_to_tree(flat: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Wrap a list of nodes as children of a synthetic Window root."""
+    if not flat:
+        return None
+    return {
+        "id": "page-root",
+        "name": "[paged]",
+        "role": "Group",
+        "value": None,
+        "bounds": {"x": 0, "y": 0, "width": 0, "height": 0},
+        "enabled": True, "focused": False,
+        "keyboard_shortcut": None, "description": None,
+        "children": [dict(n, children=[]) for n in flat],
+    }
+
+
+# ─── P3: cropped screenshots, region OCR, budgeted description ────────────────
+
+def get_screenshot_cropped(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    """get_screenshot with optional bbox / element_id / max_width / padding."""
+    step_id, caused_by = _new_step_id("get_screenshot_cropped")
+    windows, res = _resolve_window(ctx, args)
+    info = res.info
+    hwnd = info.handle if info else None
+    shot = ctx.observer.get_screenshot(hwnd)
+    if shot is None:
+        return error_dict(Code.INTERNAL, "screenshot capture failed",
+                          step_id=step_id)
+
+    bbox: Optional[Dict[str, int]] = args.get("bbox")
+    element_id: Optional[str] = args.get("element_id")
+    padding = int(args.get("padding_px", 0))
+    max_width: Optional[int] = args.get("max_width")
+
+    if bbox is None and element_id and info is not None:
+        tree = ctx.observer.get_element_tree(info.handle)
+        if tree is not None:
+            elem = _find_by_id(tree, element_id)
+            if elem is not None:
+                # Convert to window-relative coordinates.
+                bbox = {
+                    "x": max(0, elem.bounds.x - info.bounds.x),
+                    "y": max(0, elem.bounds.y - info.bounds.y),
+                    "width":  elem.bounds.width,
+                    "height": elem.bounds.height,
+                }
+
+    if bbox or max_width:
+        shot, source_bbox = _apply_crop(shot, bbox, padding, max_width)
+    else:
+        source_bbox = None
+
+    out: Dict[str, Any] = {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "window": info.title if info else "(full screen)",
+        "format": "png", "encoding": "base64",
+        "data": base64.b64encode(shot).decode(),
+    }
+    if source_bbox:
+        out["source_bbox"] = source_bbox
+    return out
+
+
+def _apply_crop(png_bytes: bytes, bbox: Optional[Dict[str, int]],
+                padding: int, max_width: Optional[int]
+                ) -> Tuple[bytes, Optional[Dict[str, int]]]:
+    try:
+        import io as _io
+        from PIL import Image
+    except Exception:
+        return png_bytes, None
+    img = Image.open(_io.BytesIO(png_bytes))
+    source_bbox: Optional[Dict[str, int]] = None
+    if bbox is not None:
+        x = max(0, int(bbox.get("x", 0)) - padding)
+        y = max(0, int(bbox.get("y", 0)) - padding)
+        x2 = min(img.width,  int(bbox.get("x", 0)) + int(bbox.get("width",  0)) + padding)
+        y2 = min(img.height, int(bbox.get("y", 0)) + int(bbox.get("height", 0)) + padding)
+        if x2 > x and y2 > y:
+            img = img.crop((x, y, x2, y2))
+            source_bbox = {"x": x, "y": y, "width": x2 - x, "height": y2 - y}
+    if max_width and img.width > int(max_width):
+        ratio = int(max_width) / float(img.width)
+        new_size = (int(max_width), max(1, int(img.height * ratio)))
+        img = img.resize(new_size)
+    buf = __import__("io").BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue(), source_bbox
+
+
+def get_ocr(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Region-scoped OCR; returns [{text, confidence, bbox}]."""
+    step_id, caused_by = _new_step_id("get_ocr")
+    try:
+        import io as _io
+        from PIL import Image
+        import pytesseract
+    except Exception:
+        return error_dict(Code.PLATFORM_UNSUPPORTED,
+                          "pytesseract / Pillow not installed",
+                          step_id=step_id)
+    windows, res = _resolve_window(ctx, args)
+    info = res.info
+    if info is None:
+        return error_dict(Code.BAD_REQUEST,
+                          "window_uid or window_index is required",
+                          step_id=step_id)
+    shot = ctx.observer.get_screenshot(info.handle)
+    if shot is None:
+        return error_dict(Code.INTERNAL, "screenshot capture failed",
+                          step_id=step_id)
+    bbox = args.get("bbox")
+    element_id = args.get("element_id")
+    if element_id and not bbox:
+        tree = ctx.observer.get_element_tree(info.handle)
+        if tree is not None:
+            elem = _find_by_id(tree, element_id)
+            if elem is not None:
+                bbox = {
+                    "x": max(0, elem.bounds.x - info.bounds.x),
+                    "y": max(0, elem.bounds.y - info.bounds.y),
+                    "width":  elem.bounds.width,
+                    "height": elem.bounds.height,
+                }
+
+    img = Image.open(_io.BytesIO(shot))
+    if bbox:
+        x = max(0, int(bbox.get("x", 0)))
+        y = max(0, int(bbox.get("y", 0)))
+        x2 = min(img.width,  x + int(bbox.get("width",  0)))
+        y2 = min(img.height, y + int(bbox.get("height", 0)))
+        if x2 > x and y2 > y:
+            img = img.crop((x, y, x2, y2))
+
+    min_conf = (ctx.config.get("ocr", {}) or {}).get("min_confidence", 30)
+    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    out_words: List[Dict[str, Any]] = []
+    for i, text in enumerate(data["text"]):
+        text = (text or "").strip()
+        if not text:
+            continue
+        try:
+            conf = int(data["conf"][i])
+        except (TypeError, ValueError):
+            conf = 0
+        if conf < min_conf:
+            continue
+        out_words.append({
+            "text": text, "confidence": conf,
+            "bbox": {"x": int(data["left"][i]), "y": int(data["top"][i]),
+                     "width":  int(data["width"][i]),
+                     "height": int(data["height"][i])},
+        })
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "window": info.title, "window_uid": info.window_uid,
+        "words": out_words,
+    }
+
+
+def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Description with mode=auto, max_tokens, focus_element support."""
+    step_id, caused_by = _new_step_id("get_screen_description")
+    windows, res = _resolve_window(ctx, args)
+    info = res.info or _focused_window(windows)
+    if info is None:
+        return error_dict(Code.WINDOW_GONE, "no windows available",
+                          step_id=step_id)
+    tree = ctx.observer.get_element_tree(info.handle)
+    if tree is None:
+        return error_dict(Code.INTERNAL, "could not retrieve element tree",
+                          step_id=step_id)
+    mode = args.get("mode", "accessibility")
+    max_tokens = args.get("max_tokens")
+    focus_id = args.get("focus_element")
+
+    # mode=auto pick.
+    effective_mode = mode
+    if mode == "auto":
+        node_count = len(tree.flat_list())
+        if node_count >= 10:
+            effective_mode = "accessibility"
+        elif (ctx.config.get("ocr", {}) or {}).get("enabled", True):
+            effective_mode = "ocr"
+        elif (ctx.config.get("vlm", {}) or {}).get("enabled", False):
+            effective_mode = "vlm"
+        else:
+            effective_mode = "accessibility"
+
+    body = ""
+    sub: UIElement = tree
+    if focus_id:
+        found = _find_by_id(tree, focus_id)
+        if found is not None:
+            sub = found
+
+    if effective_mode == "accessibility":
+        body = ctx.describer.from_tree(sub, info)
+    elif effective_mode == "ocr":
+        shot = ctx.observer.get_screenshot(info.handle)
+        body = ctx.describer.from_ocr(shot) if shot else "[screenshot unavailable]"
+    elif effective_mode == "vlm":
+        shot = ctx.observer.get_screenshot(info.handle)
+        body = ctx.describer.from_vlm(shot) if shot else "[screenshot unavailable]"
+    elif effective_mode == "combined":
+        shot = ctx.observer.get_screenshot(info.handle)
+        combined = ctx.describer.combined(sub, shot, info)
+        body = "\n\n".join(f"[{k}]\n{v}" for k, v in combined.items())
+    else:
+        return error_dict(Code.BAD_REQUEST, f"unknown mode {mode!r}",
+                          step_id=step_id)
+
+    truncated = False
+    if max_tokens is not None:
+        char_cap = int(max_tokens) * 4   # rough chars-per-token
+        if len(body) > char_cap:
+            body = body[:char_cap] + "… [truncated]"
+            truncated = True
+
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "window": info.title, "window_uid": info.window_uid,
+        "mode": mode, "effective_mode": effective_mode,
+        "description": body,
+        "truncated": truncated,
+    }
+
+
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 REGISTRY: Dict[str, Callable[[ToolContext, Dict[str, Any]], Dict[str, Any]]] = {
@@ -1053,6 +1452,11 @@ REGISTRY: Dict[str, Callable[[ToolContext, Dict[str, Any]], Dict[str, Any]]] = {
     "click_element_and_observe":  click_element_and_observe,
     "type_and_observe":           type_and_observe,
     "press_key_and_observe":      press_key_and_observe,
+
+    # P3
+    "get_screenshot_cropped":  get_screenshot_cropped,
+    "get_ocr":                 get_ocr,
+    "get_screen_description":  get_screen_description,
 }
 
 

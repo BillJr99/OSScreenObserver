@@ -56,21 +56,24 @@ _TOOLS: List[Dict] = [
         "name": "get_window_structure",
         "description": (
             "Return the accessibility element tree for a window as structured JSON. "
-            "Each node carries: id, name, role, value, bounds, enabled, focused, "
-            "keyboard_shortcut, and a children array. "
-            "Use window_index from list_windows; omit to use the focused window."
+            "Each node carries id, name, role, value, bounds, enabled, focused, "
+            "keyboard_shortcut, and a children array.  Supports server-side "
+            "filtering: roles, exclude_roles, name_regex, visible_only, "
+            "max_text_len, prune_empty, max_nodes (with page_cursor)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "window_index": {
-                    "type": "integer",
-                    "description": "Window index from list_windows (0-based). Omit for focused window.",
-                },
-                "max_depth": {
-                    "type": "integer",
-                    "description": "Maximum tree depth to traverse (default: config value, typically 8).",
-                },
+                "window_index":  {"type": "integer"},
+                "window_uid":    {"type": "string"},
+                "roles":         {"type": "array", "items": {"type": "string"}},
+                "exclude_roles": {"type": "array", "items": {"type": "string"}},
+                "name_regex":    {"type": "string"},
+                "visible_only":  {"type": "boolean"},
+                "max_text_len":  {"type": "integer"},
+                "prune_empty":   {"type": "boolean"},
+                "max_nodes":     {"type": "integer"},
+                "page_cursor":   {"type": "string"},
             },
             "required": [],
         },
@@ -79,23 +82,25 @@ _TOOLS: List[Dict] = [
         "name": "get_screen_description",
         "description": (
             "Generate a textual description of the current screen state. "
-            "mode='accessibility' serializes the element tree into prose (instant, no API). "
-            "mode='ocr' extracts visible text via Tesseract (requires pytesseract). "
-            "mode='vlm' uses Claude Vision for a rich interpretation (requires API key). "
-            "mode='combined' returns all enabled modalities."
+            "mode='accessibility' serializes the element tree into prose. "
+            "mode='ocr' extracts visible text via Tesseract. "
+            "mode='vlm' uses Claude Vision (requires API key). "
+            "mode='combined' returns all enabled modalities. "
+            "mode='auto' picks accessibility/OCR/VLM based on tree richness "
+            "and config; the chosen mode is reported as effective_mode. "
+            "Pass max_tokens for an approximate output cap and focus_element "
+            "to describe a subtree."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "window_index": {
-                    "type": "integer",
-                    "description": "Window index from list_windows. Omit for focused window.",
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["accessibility", "ocr", "vlm", "combined"],
-                    "description": "Description mode (default: accessibility).",
-                },
+                "window_index":  {"type": "integer"},
+                "window_uid":    {"type": "string"},
+                "mode":          {"type": "string",
+                                  "enum": ["accessibility", "ocr", "vlm",
+                                           "combined", "auto"]},
+                "max_tokens":    {"type": "integer"},
+                "focus_element": {"type": "string"},
             },
             "required": [],
         },
@@ -584,6 +589,46 @@ _TOOLS: List[Dict] = [
                 "window_uid":    {"type": "string"},
             },
             "required": ["keys"],
+        },
+    },
+
+    # ── P3: filtering, cropping, region OCR, budgeted description ────────────
+    {
+        "name": "get_screenshot_cropped",
+        "description": (
+            "Capture a screenshot, optionally cropped to an element_id or "
+            "explicit bbox (window-relative pixels) and downscaled to "
+            "max_width.  Returns base64 PNG plus source_bbox in the response."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "element_id":   {"type": "string"},
+                "bbox":         {"type": "object"},
+                "padding_px":   {"type": "integer"},
+                "max_width":    {"type": "integer"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_ocr",
+        "description": (
+            "Run OCR on a window or a region (element_id / bbox).  Returns "
+            "[{text, confidence, bbox}].  Cheaper and more focused than "
+            "get_screen_description for read-only verification."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "element_id":   {"type": "string"},
+                "bbox":         {"type": "object"},
+            },
+            "required": [],
         },
     },
 ]

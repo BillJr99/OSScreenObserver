@@ -745,51 +745,34 @@ def create_web_app(
 
     @app.route("/api/structure")
     def api_structure():
-        try:
-            info, hwnd, _ = _window_from_args()
-            tree = observer.get_element_tree(hwnd)
-            if tree is None:
-                return jsonify({"error": "Could not retrieve element tree"}), 500
-            return jsonify({
-                "window":        info.title if info else "(focused)",
-                "element_count": len(tree.flat_list()),
-                "tree":          tree.to_dict(),
-            })
-        except Exception as e:
-            print(f"[web_inspector:/api/structure] {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+        # Forwards through tools.dispatch so callers can use roles=,
+        # name_regex=, prune_empty=, max_nodes=, page_cursor= filters.
+        args = _merge_query()
+        for key in ("roles", "exclude_roles"):
+            if key in args and isinstance(args[key], str):
+                args[key] = [s for s in args[key].split(",") if s]
+        for bool_key in ("visible_only", "prune_empty"):
+            if bool_key in args:
+                args[bool_key] = str(args[bool_key]).lower() in ("1", "true", "yes")
+        for int_key in ("max_text_len", "max_nodes"):
+            if int_key in args:
+                try:
+                    args[int_key] = int(args[int_key])
+                except (TypeError, ValueError):
+                    args.pop(int_key, None)
+        return _tool_response("get_window_structure", args)
 
     # ── /api/description ──────────────────────────────────────────────────────
 
     @app.route("/api/description")
     def api_description():
-        try:
-            info, hwnd, _ = _window_from_args()
-            mode = request.args.get("mode", "accessibility")
-            tree = observer.get_element_tree(hwnd)
-            if tree is None:
-                return jsonify({"error": "Could not retrieve element tree"}), 500
-            shot = observer.get_screenshot(hwnd)
-
-            if mode == "accessibility":
-                return jsonify({"mode": mode, "description": describer.from_tree(tree, info)})
-            elif mode == "ocr":
-                if shot is None:
-                    return jsonify({"error": "Screenshot unavailable for OCR"}), 500
-                return jsonify({"mode": mode, "description": describer.from_ocr(shot)})
-            elif mode == "vlm":
-                if shot is None:
-                    return jsonify({"error": "Screenshot unavailable for VLM"}), 500
-                return jsonify({"mode": mode, "description": describer.from_vlm(shot)})
-            elif mode == "combined":
-                return jsonify({"mode": mode, **describer.combined(tree, shot, info)})
-            else:
-                return jsonify({"error": f"Unknown mode: {mode}"}), 400
-        except Exception as e:
-            print(f"[web_inspector:/api/description] {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+        args = _merge_query()
+        if "max_tokens" in args:
+            try:
+                args["max_tokens"] = int(args["max_tokens"])
+            except (TypeError, ValueError):
+                args.pop("max_tokens", None)
+        return _tool_response("get_screen_description", args)
 
     # ── /api/sketch ───────────────────────────────────────────────────────────
 
@@ -1069,6 +1052,16 @@ def create_web_app(
     @app.route("/api/key_and_observe", methods=["POST"])
     def api_key_observe():
         return _tool_response("press_key_and_observe", request.get_json(force=True) or {})
+
+    # ── P3: filtering, cropping, region OCR, budgeted description ───────────
+
+    @app.route("/api/screenshot/cropped")
+    def api_screenshot_cropped():
+        return _tool_response("get_screenshot_cropped", _merge_query())
+
+    @app.route("/api/ocr")
+    def api_ocr():
+        return _tool_response("get_ocr", _merge_query())
 
     @app.route("/api/healthz")
     def api_healthz():
