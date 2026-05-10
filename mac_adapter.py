@@ -16,7 +16,6 @@ pyobjc patterns (AXUIElementCreateApplication / AXUIElementCopyAttributeValue
 from __future__ import annotations
 
 import logging
-import traceback
 from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -70,8 +69,10 @@ def install_into(observer: Any) -> bool:
         pos = _attr(elem, AX_POSITION)
         size = _attr(elem, AX_SIZE)
         try:
-            x = int(pos.x); y = int(pos.y)
-            w = int(size.width); h = int(size.height)
+            x = int(pos.x)
+            y = int(pos.y)
+            w = int(size.width)
+            h = int(size.height)
             return Bounds(x, y, w, h)
         except Exception:
             return Bounds(0, 0, 0, 0)

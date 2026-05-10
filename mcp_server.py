@@ -24,9 +24,9 @@ import json
 import logging
 import sys
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from observer import ScreenObserver, WindowInfo
+from observer import ScreenObserver
 from ascii_renderer import ASCIIRenderer
 from description import DescriptionGenerator
 import tools as _tools

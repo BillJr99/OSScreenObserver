@@ -729,17 +729,7 @@ def create_web_app(
 
     @app.route("/api/windows")
     def api_windows():
-        try:
-            windows = observer.list_windows()
-            return jsonify({
-                "is_mock": observer.is_mock,
-                "count":   len(windows),
-                "windows": [{"index": i, **w.to_dict()} for i, w in enumerate(windows)],
-            })
-        except Exception as e:
-            print(f"[web_inspector:/api/windows] {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+        return _tool_response("list_windows", {})
 
     # ── /api/structure ────────────────────────────────────────────────────────
 
@@ -1158,9 +1148,9 @@ def create_web_app(
                 f"oso_screenshots_used {st['screenshots']['used']}",
             ]
         if s.active_trace is not None:
-            lines.append(f"oso_active_trace 1")
+            lines.append("oso_active_trace 1")
         else:
-            lines.append(f"oso_active_trace 0")
+            lines.append("oso_active_trace 0")
         body = "\n".join(lines) + "\n"
         return body, 200, {"Content-Type": "text/plain; version=0.0.4"}
 

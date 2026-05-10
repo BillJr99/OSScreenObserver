@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +121,10 @@ class Redactor:
         draw = ImageDraw.Draw(img)
         for r in regions:
             try:
-                x = int(r.get("x", 0)); y = int(r.get("y", 0))
-                w = int(r.get("width", 0)); h = int(r.get("height", 0))
+                x = int(r.get("x", 0))
+                y = int(r.get("y", 0))
+                w = int(r.get("width", 0))
+                h = int(r.get("height", 0))
                 if w > 0 and h > 0:
                     draw.rectangle([x, y, x + w, y + h], fill="black")
             except (TypeError, ValueError):

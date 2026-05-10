@@ -41,14 +41,12 @@ def _diff_node(path: str, a: Dict, b: Dict, out: List[Dict[str, Any]]) -> None:
     if a.get("bounds") != b.get("bounds"):
         field_changes["bounds"] = b.get("bounds")
     if field_changes:
-        out.append({"op": "replace", "path": path or "0",
+        # path="" addresses the root; descendants use slash-delimited indices.
+        out.append({"op": "replace", "path": path,
                     "fields": field_changes})
 
     a_children = a.get("children", []) or []
     b_children = b.get("children", []) or []
-
-    a_index = {(_identity(n), idx): (idx, n) for idx, n in enumerate(a_children)}
-    b_index = {(_identity(n), idx): (idx, n) for idx, n in enumerate(b_children)}
 
     a_id_to_pos: Dict[Tuple[str, str], int] = {}
     for idx, n in enumerate(a_children):
@@ -124,14 +122,9 @@ def diff_json_patch(before: Dict[str, Any], after: Dict[str, Any]
 
 
 def _to_pointer(child_path: str, field: Optional[str] = None) -> str:
-    """Convert '0/2/3' to '/children/2/children/3' (root ignored)."""
+    """Convert '0/2/3' to '/children/0/children/2/children/3' (root-relative)."""
     parts = [p for p in (child_path or "").split("/") if p != ""]
-    pointer = ""
-    for i, p in enumerate(parts):
-        if i == 0:
-            # parts[0] is the root index '0' — root has no /children prefix
-            continue
-        pointer += f"/children/{p}"
+    pointer = "".join(f"/children/{p}" for p in parts)
     if field is not None:
         pointer += f"/{field}"
     return pointer or ""
@@ -184,11 +177,8 @@ def apply_custom(before: Dict[str, Any],
 
 def _resolve(tree: Dict, path: str) -> Dict:
     parts = [p for p in path.split("/") if p != ""]
-    if not parts:
-        return tree
-    # parts[0] addresses the root
     cur = tree
-    for i, p in enumerate(parts[1:], start=1):
+    for p in parts:
         cur = cur["children"][int(p)]
     return cur
 

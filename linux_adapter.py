@@ -71,7 +71,8 @@ def install_into(observer: Any) -> bool:
             enabled = pyatspi.STATE_ENABLED in states
             focused = pyatspi.STATE_FOCUSED in states
         except Exception:
-            enabled = True; focused = False
+            enabled = True
+            focused = False
         ui = UIElement(
             element_id=eid, name=name, role=role, value=value,
             bounds=_bounds(node), enabled=enabled, focused=focused,

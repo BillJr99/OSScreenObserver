@@ -37,7 +37,6 @@ never polluted regardless of mode.
 import argparse
 import json
 import logging
-import os
 import sys
 import threading
 import traceback
@@ -181,7 +180,7 @@ def main() -> None:
     # ── Scenario (mock-only) ────────────────────────────────────────────────
     if args.scenario:
         if not observer.is_mock:
-            print(f"[main] --scenario requires --mock; ignoring", file=sys.stderr)
+            print("[main] --scenario requires --mock; ignoring", file=sys.stderr)
         else:
             try:
                 import scenarios as _scn

@@ -18,16 +18,14 @@ import base64
 import logging
 import re
 import time
-import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import element_selectors as sel
-from errors import Code, Error, error_dict, annotate_legacy_result
-from hashing import focused_selector, tree_hash, windows_hash
+from errors import Code, error_dict, annotate_legacy_result
+from hashing import focused_selector, tree_hash
 from observer import (
-    Bounds, ScreenObserver, UIElement, WindowInfo, WindowResolution,
-    _intersect_bounds, _subtract_rect,
+    ScreenObserver, UIElement, WindowInfo, WindowResolution,
 )
 from session import Session, get_session
 
@@ -1734,7 +1732,8 @@ REGISTRY.update({
 
 def hover_at(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     step_id, _ = _new_step_id("hover_at")
-    x = int(args.get("x", 0)); y = int(args.get("y", 0))
+    x = int(args.get("x", 0))
+    y = int(args.get("y", 0))
     hover_ms = int(args.get("hover_ms", 250))
     try:
         import pyautogui
@@ -1810,7 +1809,8 @@ def drag(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
                 return e.bounds.center_x, e.bounds.center_y
         return None
 
-    p1 = _to_xy(src); p2 = _to_xy(dst)
+    p1 = _to_xy(src)
+    p2 = _to_xy(dst)
     if p1 is None or p2 is None:
         return error_dict(Code.BAD_REQUEST,
                           "drag requires from/to as {x,y} or {selector|element_id}",
@@ -1830,7 +1830,8 @@ def drag(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         ok = True
         err = None
     except Exception as e:
-        ok = False; err = str(e)
+        ok = False
+        err = str(e)
     out = {"ok": ok, "success": ok, "action": "drag",
            "step_id": step_id, "caused_by_step_id": step_id,
            "from": list(p1), "to": list(p2),
