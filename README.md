@@ -137,7 +137,7 @@ or `--mode both`.
 | **STRUCTURE** | Interactive collapsible JSON tree of the accessibility element hierarchy |
 | **DESCRIPTION** | Prose description; mode selector switches between accessibility / OCR / VLM / combined |
 | **SKETCH** | ASCII spatial layout diagram (Unicode box-drawing characters) |
-| **SCREENSHOT** | Pixel screenshot of the selected window |
+| **SCREENSHOT** | Pixel screenshot, visible-area bounding boxes, and ASCII sketch (all in one panel) |
 | **ACTIONS** | Click at coordinates, type text, press key combinations |
 
 The sidebar lists all visible windows. Click one to select it. All tabs
@@ -204,9 +204,63 @@ in the tools menu. You can then ask Claude to:
 | `get_screen_description` | Prose description (accessibility / ocr / vlm / combined) |
 | `get_screen_sketch` | ASCII spatial layout diagram |
 | `get_screenshot` | Screenshot as base64 PNG |
+| `get_full_screenshot` | Screenshot + ASCII sketch in one call (sketch uses OCR overlay) |
+| `get_visible_areas` | Visible (non-occluded, on-screen) bounding boxes for a window |
 | `click_at` | Click at pixel coordinates |
 | `type_text` | Type text into the focused element |
 | `press_key` | Press a key combination (e.g., `ctrl+c`, `alt+f4`) |
+
+---
+
+## REST API Reference
+
+The web inspector exposes the following endpoints (all `GET` unless noted):
+
+| Endpoint | Params | Description |
+|----------|--------|-------------|
+| `GET /api/windows` | — | List all visible windows |
+| `GET /api/structure` | `window_index` | Accessibility element tree (JSON) |
+| `GET /api/description` | `window_index`, `mode` | Prose description |
+| `GET /api/sketch` | `window_index`, `grid_width`, `grid_height`, `ocr` | ASCII layout sketch |
+| `GET /api/screenshot` | `window_index` | Screenshot as base64 PNG |
+| `GET /api/full_screenshot` | `window_index`, `grid_width`, `grid_height` | Screenshot + ASCII sketch (sketch uses OCR overlay) |
+| `GET /api/visible_areas` | `window_index` *(required)* | Visible non-occluded bounding boxes |
+| `POST /api/action` | JSON body `{action, …}` | Execute click / type / key / scroll |
+
+### `GET /api/full_screenshot`
+
+Returns a combined response so callers don't need two round-trips:
+
+```json
+{
+  "window":   "Untitled — Notepad",
+  "format":   "png",
+  "encoding": "base64",
+  "width":    800,
+  "height":   600,
+  "data":     "<base64 PNG>",
+  "sketch":   "┌── Window ──…"
+}
+```
+
+### `GET /api/visible_areas`
+
+Returns the portions of a window that are visible on screen — not covered by
+other windows and within the monitor area:
+
+```json
+{
+  "window": "Untitled — Notepad",
+  "visible_regions": [
+    {"x": 80, "y": 60, "width": 800, "height": 400},
+    {"x": 80, "y": 500, "width": 400, "height": 160}
+  ]
+}
+```
+
+Each entry is a rectangle in absolute screen pixels. If the window is fully
+visible a single region covering the entire window is returned. If the window
+is fully off-screen or completely covered, the list is empty.
 
 ---
 

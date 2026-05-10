@@ -144,6 +144,23 @@ def api_screenshot(rest: str, window_index: Optional[int]) -> Dict:
     return _get(rest, "/api/screenshot", params)
 
 
+def api_full_screenshot(rest: str, window_index: Optional[int],
+                        grid_width: Optional[int] = None,
+                        grid_height: Optional[int] = None) -> Dict:
+    params: Dict[str, Any] = {}
+    if window_index is not None:
+        params["window_index"] = window_index
+    if grid_width is not None:
+        params["grid_width"] = grid_width
+    if grid_height is not None:
+        params["grid_height"] = grid_height
+    return _get(rest, "/api/full_screenshot", params)
+
+
+def api_visible_areas(rest: str, window_index: int) -> Dict:
+    return _get(rest, "/api/visible_areas", {"window_index": window_index})
+
+
 def api_action(rest: str, payload: Dict) -> Dict:
     return _post(rest, "/api/action", payload)
 
@@ -178,8 +195,6 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
 
     elif tool_name == "get_screenshot":
         result = api_screenshot(rest, wi)
-        # Omit the raw base64 blob from the tool result fed back to the LLM
-        # (too large); replace with a summary.
         if "data" in result:
             result = {k: v for k, v in result.items() if k != "data"}
             result["note"] = (
@@ -187,6 +202,16 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
                 "Use get_screen_description with mode='ocr' or mode='vlm' for text content."
             )
         return result
+
+    elif tool_name == "get_full_screenshot":
+        result = api_full_screenshot(rest, wi, args.get("grid_width"), args.get("grid_height"))
+        if "data" in result:
+            result = {k: v for k, v in result.items() if k != "data"}
+            result["note"] = "Screenshot captured (base64 data omitted). Sketch included above."
+        return result
+
+    elif tool_name == "get_visible_areas":
+        return api_visible_areas(rest, wi if wi is not None else 0)
 
     elif tool_name == "click_at":
         payload = {
@@ -393,6 +418,45 @@ SCREEN_TOOLS: List[Dict] = [
                     "keys": {"type": "string", "description": "Key or combination."}
                 },
                 "required": ["keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_full_screenshot",
+            "description": (
+                "Capture a screenshot AND render an ASCII sketch of a window in one call. "
+                "The sketch uses OCR overlay for higher fidelity text. "
+                "Screenshot pixel data is omitted from the tool result; the sketch is included. "
+                "Prefer this over separate get_screenshot + get_screen_sketch calls."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_index": {"type": "integer", "description": "Index from list_windows."},
+                    "grid_width":   {"type": "integer", "description": "Sketch width in chars (default: 110)."},
+                    "grid_height":  {"type": "integer", "description": "Sketch height in chars (default: 38)."},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_visible_areas",
+            "description": (
+                "Return visible (non-occluded, on-screen) bounding boxes for a window. "
+                "Each region is {x, y, width, height} in absolute screen pixels. "
+                "Use this to check that a click target is actually reachable before acting."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_index": {"type": "integer", "description": "Index from list_windows."},
+                },
+                "required": ["window_index"],
             },
         },
     },

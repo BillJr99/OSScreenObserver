@@ -485,12 +485,30 @@ async function loadScreenshot() {
   setStatus('CAPTURING…');
   try {
     const idx = selectedIndex !== null ? `?window_index=${selectedIndex}` : '';
-    const data = await apiFetch(`/api/screenshot${idx}`);
+    const [data, areas] = await Promise.all([
+      apiFetch(`/api/full_screenshot${idx}`),
+      selectedIndex !== null ? apiFetch(`/api/visible_areas?window_index=${selectedIndex}`).catch(() => null) : Promise.resolve(null),
+    ]);
     if (data.error) { panel.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; return; }
-    panel.innerHTML = `<div id="screenshot-panel">
-      <span class="shot-meta">WINDOW: ${esc(data.window)}</span>
-      <img src="data:image/png;base64,${data.data}" alt="screenshot"/>
-    </div>`;
+
+    const dimMeta = data.width ? ` · ${data.width}×${data.height}px` : '';
+    let html = `<div id="screenshot-panel">
+      <span class="shot-meta">WINDOW: ${esc(data.window)}${dimMeta}</span>
+      <img src="data:image/png;base64,${data.data}" alt="screenshot"/>`;
+
+    if (areas && areas.visible_regions) {
+      const regs = areas.visible_regions;
+      html += `<div class="desc-label" style="margin-top:14px">VISIBLE AREAS (${regs.length} region${regs.length !== 1 ? 's' : ''})</div>`;
+      html += `<pre style="font-size:10px;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:8px 12px">${esc(JSON.stringify(regs, null, 2))}</pre>`;
+    }
+
+    if (data.sketch) {
+      html += `<div class="desc-label" style="margin-top:14px">ASCII SKETCH</div>`;
+      html += `<pre style="font-size:10px;line-height:1.3;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:12px 16px;overflow-x:auto">${esc(data.sketch)}</pre>`;
+    }
+
+    html += `</div>`;
+    panel.innerHTML = html;
     setStatus('READY');
   } catch(e) { panel.innerHTML = `<pre style="color:var(--red)">${esc(String(e))}</pre>`; setStatus('ERROR'); }
 }
@@ -749,6 +767,72 @@ def create_web_app(
             })
         except Exception as e:
             print(f"[web_inspector:/api/screenshot] {e}")
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    # ── /api/full_screenshot ──────────────────────────────────────────────────
+
+    @app.route("/api/full_screenshot")
+    def api_full_screenshot():
+        """Screenshot + ASCII sketch in one call (sketch uses OCR overlay)."""
+        try:
+            info, hwnd, _ = _window_from_args()
+            shot = observer.get_screenshot(hwnd)
+            if shot is None:
+                return jsonify({"error": "Screenshot capture failed"}), 500
+
+            sketch: Optional[str] = None
+            tree = observer.get_element_tree(hwnd)
+            if tree is not None:
+                gw  = request.args.get("grid_width",  type=int)
+                gh  = request.args.get("grid_height", type=int)
+                ref = info.bounds if info else tree.bounds
+                sketch = renderer.render(
+                    root             = tree,
+                    screen_bounds    = ref,
+                    grid_width       = gw,
+                    grid_height      = gh,
+                    screenshot_bytes = shot,
+                )
+
+            try:
+                import io as _io
+                from PIL import Image as _Image
+                _img = _Image.open(_io.BytesIO(shot))
+                img_w, img_h = _img.size
+            except Exception:
+                img_w = img_h = None
+
+            return jsonify({
+                "window":   info.title if info else "(full screen)",
+                "format":   "png",
+                "encoding": "base64",
+                "width":    img_w,
+                "height":   img_h,
+                "data":     base64.b64encode(shot).decode(),
+                "sketch":   sketch,
+            })
+        except Exception as e:
+            print(f"[web_inspector:/api/full_screenshot] {e}")
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    # ── /api/visible_areas ────────────────────────────────────────────────────
+
+    @app.route("/api/visible_areas")
+    def api_visible_areas():
+        """Visible (non-occluded, on-screen) bounding boxes for a window."""
+        try:
+            info, hwnd, windows = _window_from_args()
+            if hwnd is None:
+                return jsonify({"error": "window_index is required"}), 400
+            areas = observer.get_visible_areas(hwnd, windows)
+            return jsonify({
+                "window":          info.title if info else "(unknown)",
+                "visible_regions": areas,
+            })
+        except Exception as e:
+            print(f"[web_inspector:/api/visible_areas] {e}")
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 

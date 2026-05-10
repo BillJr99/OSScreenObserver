@@ -656,3 +656,87 @@ class ScreenObserver:
         if 0 <= index < len(windows):
             return windows[index]
         return None
+
+    # ── Visibility helpers ────────────────────────────────────────────────────
+
+    def _get_screen_bounds(self) -> Bounds:
+        """Return the bounding rect of the combined virtual screen (all monitors)."""
+        try:
+            import mss
+            with mss.mss() as sct:
+                m = sct.monitors[0]   # index 0 = union of all monitors
+                return Bounds(m["left"], m["top"], m["width"], m["height"])
+        except Exception:
+            return Bounds(0, 0, 65535, 65535)
+
+    def get_visible_areas(self, target_hwnd: Any,
+                          all_windows: List[WindowInfo]) -> List[Dict]:
+        """
+        Return a list of {x, y, width, height} dicts for the portions of the
+        window identified by *target_hwnd* that are on-screen and not covered
+        by any other window in *all_windows*.
+
+        The method is conservative: every other window is treated as a
+        potential occluder regardless of z-order.  Windows entirely behind
+        the target are rare in practice (focused window is typically on top),
+        so this gives a good approximation on all platforms without needing
+        platform-specific z-order APIs.
+        """
+        target = next((w for w in all_windows if w.handle == target_hwnd), None)
+        if target is None:
+            return []
+
+        screen   = self._get_screen_bounds()
+        clipped  = _intersect_bounds(target.bounds, screen)
+        if not clipped:
+            return []
+
+        visible: List[Bounds] = [clipped]
+        for w in all_windows:
+            if w.handle == target_hwnd:
+                continue
+            visible = _subtract_rect(visible, w.bounds)
+
+        return [b.to_dict() for b in visible]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rectangle geometry helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _intersect_bounds(a: Bounds, b: Bounds) -> Optional[Bounds]:
+    x1 = max(a.x, b.x)
+    y1 = max(a.y, b.y)
+    x2 = min(a.right, b.right)
+    y2 = min(a.bottom, b.bottom)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return Bounds(x1, y1, x2 - x1, y2 - y1)
+
+
+def _subtract_rect(rects: List[Bounds], occluder: Bounds) -> List[Bounds]:
+    """Subtract occluder from each rect, splitting into up to 4 sub-rects."""
+    result: List[Bounds] = []
+    for r in rects:
+        ix1 = max(r.x, occluder.x)
+        iy1 = max(r.y, occluder.y)
+        ix2 = min(r.right, occluder.right)
+        iy2 = min(r.bottom, occluder.bottom)
+
+        if ix2 <= ix1 or iy2 <= iy1:
+            result.append(r)
+            continue
+
+        # Top strip
+        if iy1 > r.y:
+            result.append(Bounds(r.x, r.y, r.width, iy1 - r.y))
+        # Bottom strip
+        if iy2 < r.bottom:
+            result.append(Bounds(r.x, iy2, r.width, r.bottom - iy2))
+        # Left strip (height = intersection height)
+        if ix1 > r.x:
+            result.append(Bounds(r.x, iy1, ix1 - r.x, iy2 - iy1))
+        # Right strip (height = intersection height)
+        if ix2 < r.right:
+            result.append(Bounds(ix2, iy1, r.right - ix2, iy2 - iy1))
+    return result
