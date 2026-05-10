@@ -58,6 +58,16 @@ def _get(base: str, path: str, params: Optional[Dict] = None, timeout: int = 30)
         return json.loads(resp.read().decode())
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Raise on any redirect so a POST is never silently converted to GET."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(newurl, code,
+                                     f"Redirect to {newurl} — update your base URL",
+                                     headers, fp)
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 def _post(base: str, path: str, data: Any, headers: Optional[Dict] = None,
           timeout: int = 60) -> Any:
     body = json.dumps(data).encode()
@@ -67,7 +77,7 @@ def _post(base: str, path: str, data: Any, headers: Optional[Dict] = None,
         headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _NO_REDIRECT_OPENER.open(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode())
 
 # ─── REST server poller ───────────────────────────────────────────────────────
@@ -601,11 +611,11 @@ def _print_tool_result(tool_name: str, result: Any) -> None:
 # ─── Display helpers ──────────────────────────────────────────────────────────
 
 _BANNER = r"""
-   ___  ____  ____                           _                    _
-  / _ \/ ___||  _ \ ___  ___ _ __ ___  ___ | |__  ___  ___ _ __| |_ ___ _ __
- | | | \___ \| |_) / __|/ __| '__/ _ \/ _ \| '_ \/ __|/ _ \ '__| __/ _ \ '__|
- | |_| |___) |  __/\__ \ (__| | |  __/  __/| |_) \__ \  __/ |  | ||  __/ |
-  \___/|____/|_|   |___/\___|_|  \___|\___|_.__/|___/\___|_|   \__\___|_|
+  ___  ____ ____                            ___  _
+ / _ \/ ___/ ___|  ___ _ __ ___  ___ _ __  / _ \| |__  ___  ___ _ ____   _____ _ __
+| | | \___ \___ \ / __| '__/ _ \/ _ \ '_ \| | | | '_ \/ __|/ _ \ '__\ \ / / _ \ '__|
+| |_| |___) |__) | (__| | |  __/  __/ | | | |_| | |_) \__ \  __/ |   \ V /  __/ |
+ \___/|____/____/ \___|_|  \___|\___|_| |_|\___/|_.__/|___/\___|_|    \_/ \___|_|
 """
 
 def print_banner():
@@ -667,12 +677,35 @@ def prompt(msg: str, default: str = "", secret: bool = False) -> str:
 
 
 def ask_connection() -> Tuple[str, str, str]:
-    """Interactively collect OpenWebUI connection parameters."""
+    """Interactively collect OpenWebUI connection parameters (model chosen after fetch)."""
     print(_c("\n  ── OpenWebUI / LLM Connection ──────────────────────────────\n", "bold"))
     base_url = prompt("  OpenWebUI base URL", "http://localhost:3000")
     api_key  = prompt("  API key (leave blank if none)", secret=True)
-    model    = prompt("  Model name", "llama3.2:3b")
-    return base_url, api_key, model
+    return base_url, api_key, ""
+
+
+def pick_model(models: List[str], fallback: str = "llama3.2:3b") -> str:
+    """Display a numbered menu of *models* and return the chosen model id."""
+    print(_c("\n  Available models:\n", "bold"))
+    for i, m in enumerate(models):
+        print(_c(f"    {i + 1:>3}. ", "yellow") + m)
+    print()
+    while True:
+        raw = input(_c("  Select model (number or name): ", "bold", "cyan")).strip()
+        if not raw:
+            return fallback
+        if raw.isdigit():
+            idx = int(raw) - 1
+            if 0 <= idx < len(models):
+                return models[idx]
+            print(_c(f"  Please enter a number between 1 and {len(models)}.", "red"))
+        elif raw in models:
+            return raw
+        else:
+            # Accept free-text entry for models not in the list
+            confirm = input(_c(f"  '{raw}' not in list — use it anyway? [y/N] ", "yellow")).strip().lower()
+            if confirm == "y":
+                return raw
 
 
 def list_models(llm_base: str, api_key: str) -> List[str]:
@@ -712,22 +745,16 @@ def main() -> None:
         sys.exit(1)
 
     # ── 2. LLM connection ─────────────────────────────────────────────────────
-    llm_base, api_key, model = ask_connection()
+    llm_base, api_key, _ = ask_connection()
 
-    # Try to list models to verify connection
     print(_c(f"\n  Checking connection to {llm_base} …", "dim"), end="", flush=True)
     models = list_models(llm_base, api_key)
     if models:
         print(_c(f" OK  ({len(models)} model(s) available)", "green"))
-        if model not in models:
-            print(_c(f"  Note: '{model}' not in model list. Available:", "yellow"))
-            for m in models[:10]:
-                print(_c(f"    • {m}", "yellow"))
-            new = prompt("  Enter model name to use", model)
-            if new:
-                model = new
+        model = pick_model(models)
     else:
-        print(_c(" (could not list models — continuing anyway)", "yellow"))
+        print(_c(" (could not list models)", "yellow"))
+        model = prompt("  Model name", "llama3.2:3b")
 
     llm = LLMClient(llm_base, api_key, model)
 
