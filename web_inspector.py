@@ -1092,6 +1092,20 @@ def create_web_app(
     def api_assert_state():
         return _tool_response("assert_state", request.get_json(force=True) or {})
 
+    # ── P5: budgets / redaction status / propose ────────────────────────────
+
+    @app.route("/api/budget_status")
+    def api_budget_status():
+        return _tool_response("get_budget_status", {})
+
+    @app.route("/api/redaction_status")
+    def api_redaction_status():
+        return _tool_response("get_redaction_status", {})
+
+    @app.route("/api/propose_action", methods=["POST"])
+    def api_propose():
+        return _tool_response("propose_action", request.get_json(force=True) or {})
+
     @app.route("/api/healthz")
     def api_healthz():
         from session import get_session

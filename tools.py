@@ -1649,10 +1649,125 @@ REGISTRY.update({
 })
 
 
+# ─── P5: budgets, propose_action, status reporters ───────────────────────────
+
+def get_budget_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    step_id, caused_by = _new_step_id("get_budget_status")
+    sess = get_session()
+    if sess.budgets is None:
+        return {"ok": True, "success": True,
+                "step_id": step_id, "caused_by_step_id": caused_by,
+                "configured": False}
+    out = sess.budgets.status()
+    out.update({"ok": True, "success": True, "configured": True,
+                "step_id": step_id, "caused_by_step_id": caused_by})
+    return out
+
+
+def get_redaction_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    step_id, caused_by = _new_step_id("get_redaction_status")
+    sess = get_session()
+    out = sess.redactor.status() if sess.redactor else {"enabled": False, "active": False}
+    out.update({"ok": True, "success": True,
+                "step_id": step_id, "caused_by_step_id": caused_by})
+    return out
+
+
+def propose_action(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Issue a single-use confirm_token for a destructive action."""
+    step_id, caused_by = _new_step_id("propose_action")
+    action = args.get("action")
+    inner_args = args.get("args") or {}
+    if not action:
+        return error_dict(Code.BAD_REQUEST, "action is required",
+                          step_id=step_id)
+
+    windows, res = _resolve_window(ctx, inner_args)
+    info = res.info or _focused_window(windows)
+    if info is None:
+        return error_dict(Code.WINDOW_GONE, "no windows available",
+                          step_id=step_id)
+    tree = ctx.observer.get_element_tree(info.handle)
+    if tree is None:
+        return error_dict(Code.INTERNAL, "could not retrieve element tree",
+                          step_id=step_id)
+    elem, selector_str, err = _resolve_element(tree, inner_args)
+    if err:
+        return {**err, "step_id": step_id}
+
+    sess = get_session()
+    bbox = elem.bounds.to_dict()
+    ct = sess.confirms.issue(
+        action=action, window_uid=info.window_uid,
+        selector=selector_str, bbox=bbox, args=inner_args,
+    )
+    # Optional preview crop.
+    try:
+        shot = ctx.observer.get_screenshot(info.handle)
+        crop_bytes, _ = _apply_crop(shot, bbox=bbox, padding=8, max_width=400)
+        preview_b64 = base64.b64encode(crop_bytes).decode() if crop_bytes else None
+    except Exception:
+        preview_b64 = None
+
+    return {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "confirm_token": ct.token,
+        "expires_at": ct.expires_at,
+        "would_target": {
+            "window_uid": info.window_uid,
+            "selector": selector_str,
+            "bounds": bbox,
+            "screenshot_b64": preview_b64,
+        },
+    }
+
+
+REGISTRY.update({
+    "get_budget_status":    get_budget_status,
+    "get_redaction_status": get_redaction_status,
+    "propose_action":       propose_action,
+})
+
+
+_ALLOWLIST_TOOLS = {
+    "get_capabilities", "get_monitors", "get_budget_status",
+    "get_redaction_status", "trace_status", "replay_status",
+    "list_windows",
+}
+
+
+def _check_allowlist(ctx: ToolContext, name: str
+                     ) -> Optional[Dict[str, Any]]:
+    actions = ctx.config.get("actions") or {}
+    allow = set(actions.get("allow") or [])
+    deny = set(actions.get("deny") or [])
+    default = actions.get("default", "allow")
+    if name in _ALLOWLIST_TOOLS:
+        return None
+    if name in deny:
+        return error_dict(Code.PERMISSION_DENIED,
+                          f"tool {name!r} is in actions.deny")
+    if allow and name not in allow and default == "deny":
+        return error_dict(Code.PERMISSION_DENIED,
+                          f"tool {name!r} is not in actions.allow")
+    if not allow and default == "deny":
+        return error_dict(Code.PERMISSION_DENIED,
+                          f"actions.default is 'deny' and no allowlist matches {name!r}")
+    return None
+
+
 def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     fn = REGISTRY.get(name)
     if fn is None:
         return error_dict(Code.BAD_REQUEST, f"unknown tool: {name}")
+
+    blocked = _check_allowlist(ctx, name)
+    if blocked is not None:
+        sid, _ = _new_step_id(name)
+        blocked["step_id"] = sid
+        return blocked
+
     started = time.time()
     sess = get_session()
     tree_before = ""
@@ -1715,11 +1830,48 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
             except Exception:
                 logger.exception("trace.record failed")
 
-    # Audit log (no-op until P5 plumbs it in).
+    # Apply redaction to text-bearing read-only results.
+    if sess.redactor is not None:
+        try:
+            result = _apply_redaction(name, result, sess.redactor)
+        except Exception:
+            logger.exception("redaction failed")
+
+    # Budget accounting.
     if sess.budgets is not None:
         try:
             sess.budgets.note(name, result)
         except Exception:
             pass
 
+    # Audit log.
+    if sess.auditor is not None:
+        try:
+            sess.auditor.record(
+                tool=name, caller=args.get("_caller", "unknown"),
+                args=args or {}, result=result,
+            )
+        except Exception:
+            logger.exception("audit failed")
+
+    return result
+
+
+def _apply_redaction(tool: str, result: Dict[str, Any], redactor: Any
+                      ) -> Dict[str, Any]:
+    if not redactor.is_active() or not isinstance(result, dict):
+        return result
+    if tool == "get_window_structure" and "tree" in result:
+        title = result.get("window") or ""
+        result["tree"] = redactor.redact_tree(result["tree"], title)
+    elif tool == "observe_window":
+        if "tree" in result and isinstance(result["tree"], dict):
+            result["tree"] = redactor.redact_tree(result["tree"],
+                                                   result.get("window") or "")
+    elif tool == "get_screen_description":
+        if isinstance(result.get("description"), str):
+            result["description"] = redactor.redact_ocr_text(result["description"])
+    elif tool == "get_ocr":
+        if isinstance(result.get("words"), list):
+            result["words"] = redactor.redact_ocr_words(result["words"])
     return result

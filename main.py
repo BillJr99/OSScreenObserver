@@ -204,6 +204,28 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[main] Budget setup skipped: {e}")
 
+    # ── Redaction (P5) ──────────────────────────────────────────────────────
+    try:
+        from redaction import Redactor
+        from session import get_session as _gs
+        red = Redactor(config)
+        if red.is_active():
+            _gs().redactor = red
+            logger.info(f"[main] Redaction active: {red.status()}")
+    except Exception as e:
+        logger.warning(f"[main] Redaction setup skipped: {e}")
+
+    # ── Audit log (P5) ──────────────────────────────────────────────────────
+    try:
+        from audit import AuditLogger
+        from session import get_session as _gs2
+        au = AuditLogger.from_config(config)
+        if au is not None:
+            _gs2().auditor = au
+            logger.info(f"[main] Audit log → {au.path}")
+    except Exception as e:
+        logger.warning(f"[main] Audit setup skipped: {e}")
+
     # ── Web inspector ────────────────────────────────────────────────────────
     if args.mode in ("inspect", "both"):
         from web_inspector import create_web_app

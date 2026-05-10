@@ -695,6 +695,40 @@ _TOOLS: List[Dict] = [
         },
     },
     {
+        "name": "get_budget_status",
+        "description": (
+            "Report remaining budget for actions, screenshots, VLM tokens, "
+            "session_seconds, and actions_per_minute (sliding 60s window).  "
+            "Returns configured=false when no budgets are set."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_redaction_status",
+        "description": (
+            "Report redaction enabled state, total patterns count, and how "
+            "many redactions have been applied so far this session."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "propose_action",
+        "description": (
+            "For destructive actions matched by config.confirmation_required, "
+            "issue a single-use confirm_token bound to the resolved element's "
+            "(window_uid, selector, bbox).  The agent must call the actual "
+            "action with the returned confirm_token within the TTL."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "args":   {"type": "object"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "assert_state",
         "description": (
             "Evaluate a list of declarative predicates (AND).  Predicates: "

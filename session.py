@@ -236,6 +236,10 @@ class Session:
     # Set by budgets.py (lazy import to avoid circular).
     budgets: Optional[Any] = None
 
+    # Set by main.py from config (P5: redaction.Redactor, audit.AuditLogger).
+    redactor: Optional[Any] = None
+    auditor:  Optional[Any] = None
+
 
 _GLOBAL: Optional[Session] = None
 _GLOBAL_LOCK = threading.Lock()
