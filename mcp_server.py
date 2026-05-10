@@ -200,6 +200,31 @@ _TOOLS: List[Dict] = [
         },
     },
     {
+        "name": "scroll",
+        "description": (
+            "Scroll the mouse wheel at an optional screen position. "
+            "Positive clicks scroll up/forward; negative clicks scroll down/backward."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "clicks": {
+                    "type": "integer",
+                    "description": "Scroll amount (positive = up, negative = down). Default: 3.",
+                },
+                "x": {
+                    "type": "integer",
+                    "description": "Screen X coordinate to scroll at (optional).",
+                },
+                "y": {
+                    "type": "integer",
+                    "description": "Screen Y coordinate to scroll at (optional).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "get_full_screenshot",
         "description": (
             "Capture a screenshot of the entire virtual desktop (all monitors combined) "
@@ -242,6 +267,26 @@ _TOOLS: List[Dict] = [
                 "window_index": {
                     "type": "integer",
                     "description": "Window index from list_windows.",
+                },
+            },
+            "required": ["window_index"],
+        },
+    },
+    {
+        "name": "bring_to_foreground",
+        "description": (
+            "Bring a window to the foreground by clicking in its title-bar area. "
+            "The tool computes the visible (non-occluded) region of the window, "
+            "then clicks near the top-centre of that region (typically the title bar) "
+            "to raise it above other windows. "
+            "Returns the click coordinates and success status."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "window_index": {
+                    "type": "integer",
+                    "description": "Window index from list_windows (required).",
                 },
             },
             "required": ["window_index"],
@@ -371,11 +416,17 @@ class MCPServer:
             elif name == "press_key":
                 return self.observer.perform_action("key", value=args.get("keys", ""))
 
+            elif name == "scroll":
+                return self.observer.perform_action("scroll", value=args)
+
             elif name == "get_full_screenshot":
                 return self._t_full_screenshot(hwnd, info, args)
 
             elif name == "get_visible_areas":
                 return self._t_visible_areas(hwnd, info, windows)
+
+            elif name == "bring_to_foreground":
+                return self._t_bring_to_foreground(hwnd, info, windows)
 
             else:
                 return {"error": f"Unknown tool: {name}"}
@@ -525,6 +576,14 @@ class MCPServer:
             "window":          info.title if info else "(unknown)",
             "visible_regions": areas,
         }
+
+    def _t_bring_to_foreground(self, hwnd, info, windows) -> Dict:
+        if hwnd is None:
+            return {"success": False,
+                    "error": "window_index is required for bring_to_foreground"}
+        result = self.observer.bring_to_foreground(hwnd, windows)
+        result["window"] = info.title if info else "(unknown)"
+        return result
 
     def _t_click_at(self, args) -> Dict:
         return self.observer.perform_action(

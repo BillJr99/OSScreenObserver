@@ -330,6 +330,14 @@ details > summary::-webkit-details-marker { display: none; }
             </div>
             <div class="action-result" id="key-result"></div>
           </div>
+          <div class="action-group">
+            <h3>BRING WINDOW TO FOREGROUND</h3>
+            <div class="action-row">
+              <span style="color:var(--text-dim);font-size:11px;font-family:var(--mono)">Clicks the title bar of the selected window to raise it.</span>
+              <button class="action-btn" onclick="doBringToForeground()">BRING TO FRONT</button>
+            </div>
+            <div class="action-result" id="bring-result"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -499,6 +507,8 @@ async function loadScreenshot() {
       const regs = areas.visible_regions;
       html += `<div class="desc-label" style="margin-top:14px">VISIBLE AREAS (${regs.length} region${regs.length !== 1 ? 's' : ''})</div>`;
       html += `<pre style="font-size:10px;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:8px 12px">${esc(JSON.stringify(regs, null, 2))}</pre>`;
+      html += `<button class="action-btn" style="margin-top:8px" onclick="doBringToForeground()">BRING TO FRONT</button>`;
+      html += `<div class="action-result" id="bring-result"></div>`;
     }
 
     html += `<div class="desc-label" style="margin-top:14px">FULL DISPLAY</div>
@@ -576,6 +586,28 @@ function doType() {
 function doKey() {
   const keys = document.getElementById('key-combo').value;
   postAction({action:'key', value: keys}, 'key-result');
+}
+
+async function doBringToForeground() {
+  const el = document.getElementById('bring-result');
+  el.classList.remove('visible', 'error');
+  if (selectedIndex === null) {
+    el.textContent = 'No window selected — pick one from the sidebar first.';
+    el.classList.add('visible', 'error');
+    return;
+  }
+  setStatus('BRINGING TO FOREGROUND…');
+  try {
+    const data = await apiFetch(`/api/bring_to_foreground?window_index=${selectedIndex}`);
+    el.textContent = JSON.stringify(data);
+    el.classList.add('visible');
+    el.classList.toggle('error', data.success === false);
+    setStatus(data.success !== false ? 'ACTION OK' : 'ACTION FAILED');
+  } catch(e) {
+    el.textContent = String(e);
+    el.classList.add('visible', 'error');
+    setStatus('ERROR');
+  }
 }
 
 // ── JSON tree renderer ────────────────────────────────────────────────────────
@@ -888,6 +920,24 @@ def create_web_app(
             print(f"[web_inspector:/api/visible_areas] {e}")
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
+
+    # ── /api/bring_to_foreground ──────────────────────────────────────────────
+
+    @app.route("/api/bring_to_foreground")
+    def api_bring_to_foreground():
+        """Click the title bar of a window to bring it to the foreground."""
+        try:
+            info, hwnd, windows = _window_from_args()
+            if hwnd is None:
+                return jsonify({"success": False,
+                                "error": "window_index is required"}), 400
+            result = observer.bring_to_foreground(hwnd, windows)
+            result["window"] = info.title if info else "(unknown)"
+            return jsonify(result)
+        except Exception as e:
+            print(f"[web_inspector:/api/bring_to_foreground] {e}")
+            traceback.print_exc()
+            return jsonify({"success": False, "error": str(e)}), 500
 
     # ── /api/action ───────────────────────────────────────────────────────────
 

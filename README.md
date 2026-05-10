@@ -206,9 +206,11 @@ in the tools menu. You can then ask Claude to:
 | `get_screenshot` | Screenshot as base64 PNG |
 | `get_full_screenshot` | Screenshot + ASCII sketch in one call (sketch uses OCR overlay) |
 | `get_visible_areas` | Visible (non-occluded, on-screen) bounding boxes for a window |
+| `bring_to_foreground` | Click the title bar of a window to raise it above other windows |
 | `click_at` | Click at pixel coordinates |
 | `type_text` | Type text into the focused element |
 | `press_key` | Press a key combination (e.g., `ctrl+c`, `alt+f4`) |
+| `scroll` | Scroll the mouse wheel at an optional screen position |
 
 ---
 
@@ -225,6 +227,7 @@ The web inspector exposes the following endpoints (all `GET` unless noted):
 | `GET /api/screenshot` | `window_index` | Screenshot as base64 PNG |
 | `GET /api/full_screenshot` | `window_index`, `grid_width`, `grid_height` | Screenshot + ASCII sketch (sketch uses OCR overlay) |
 | `GET /api/visible_areas` | `window_index` *(required)* | Visible non-occluded bounding boxes |
+| `GET /api/bring_to_foreground` | `window_index` *(required)* | Click the title bar to raise the window |
 | `POST /api/action` | JSON body `{action, …}` | Execute click / type / key / scroll |
 
 ### `GET /api/full_screenshot`
@@ -261,6 +264,26 @@ other windows and within the monitor area:
 Each entry is a rectangle in absolute screen pixels. If the window is fully
 visible a single region covering the entire window is returned. If the window
 is fully off-screen or completely covered, the list is empty.
+
+### `GET /api/bring_to_foreground`
+
+Raises a window by clicking in its title-bar area. The server computes the
+visible (non-occluded) region of the window, then clicks near the top-centre
+of that region (typically ~20 px below the top edge, where the title bar is):
+
+```json
+{
+  "window":    "Untitled — Notepad",
+  "success":   true,
+  "action":    "click_at",
+  "clicked_x": 960,
+  "clicked_y": 80
+}
+```
+
+`window_index` is required. If the window has no visible area (fully covered
+or off-screen) the response will contain `"success": false` with an error
+message.
 
 ---
 

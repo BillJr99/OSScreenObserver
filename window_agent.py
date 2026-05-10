@@ -161,6 +161,10 @@ def api_visible_areas(rest: str, window_index: int) -> Dict:
     return _get(rest, "/api/visible_areas", {"window_index": window_index})
 
 
+def api_bring_to_foreground(rest: str, window_index: int) -> Dict:
+    return _get(rest, "/api/bring_to_foreground", {"window_index": window_index})
+
+
 def api_action(rest: str, payload: Dict) -> Dict:
     return _post(rest, "/api/action", payload)
 
@@ -219,6 +223,11 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         if wi is None:
             return {"error": "get_visible_areas requires a selected window (window_index)"}
         return api_visible_areas(rest, wi)
+
+    elif tool_name == "bring_to_foreground":
+        if wi is None:
+            return {"error": "bring_to_foreground requires a selected window (window_index)"}
+        return api_bring_to_foreground(rest, wi)
 
     elif tool_name == "click_at":
         payload = {
@@ -487,6 +496,25 @@ SCREEN_TOOLS: List[Dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "bring_to_foreground",
+            "description": (
+                "Bring a window to the foreground by clicking in its title-bar area. "
+                "Computes the visible region of the window and clicks near the top-centre "
+                "(title bar) to raise it above other windows. "
+                "Call this when a window is behind other windows and you need to interact with it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_index": {"type": "integer", "description": "Index from list_windows."},
+                },
+                "required": ["window_index"],
+            },
+        },
+    },
 ]
 
 SYSTEM_PROMPT = """\
@@ -507,11 +535,12 @@ Call observe_window:
 
 WORKFLOW
 1. list_windows — identify the target window_index
-2. observe_window — understand current state
-3. get_element_tree — get exact coordinates when needed
-4. Execute exactly one action (click_at / type_text / press_key)
-5. observe_window — verify the change
-6. Repeat until the task is complete
+2. bring_to_foreground — if the window may be behind others, raise it first
+3. observe_window — understand current state
+4. get_element_tree — get exact coordinates when needed
+5. Execute exactly one action (click_at / type_text / press_key)
+6. observe_window — verify the change
+7. Repeat until the task is complete
 
 If an action does not produce the expected result, do not repeat it;
 re-observe and try an alternative approach.
