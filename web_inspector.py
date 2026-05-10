@@ -703,20 +703,28 @@ def create_web_app(
             if tree is None:
                 return jsonify({"error": "Could not retrieve element tree"}), 500
 
-            gw = request.args.get("grid_width",  type=int)
-            gh = request.args.get("grid_height", type=int)
+            gw  = request.args.get("grid_width",  type=int)
+            gh  = request.args.get("grid_height", type=int)
             ref = info.bounds if info else tree.bounds
 
+            # Optional OCR overlay: pass ?ocr=1 to enable Tesseract text overlay.
+            # Requires pytesseract + tesseract on PATH; silently skipped otherwise.
+            shot_bytes: Optional[bytes] = None
+            if request.args.get("ocr", "").strip() in ("1", "true", "yes"):
+                shot_bytes = observer.get_screenshot(hwnd)
+
             sketch = renderer.render(
-                root          = tree,
-                screen_bounds = ref,
-                grid_width    = gw,
-                grid_height   = gh,
+                root             = tree,
+                screen_bounds    = ref,
+                grid_width       = gw,
+                grid_height      = gh,
+                screenshot_bytes = shot_bytes,
             )
             return jsonify({
                 "window":      info.title if info else "(focused)",
                 "grid_width":  gw or renderer.default_width,
                 "grid_height": gh or renderer.default_height,
+                "ocr_overlay": shot_bytes is not None,
                 "sketch":      sketch,
             })
         except Exception as e:
