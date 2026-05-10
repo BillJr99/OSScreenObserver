@@ -361,27 +361,76 @@ class WindowsAdapter:
 
     def get_screenshot(self, hwnd=None) -> Optional[bytes]:
         try:
-            import mss
+            import win32gui
+            import win32ui
             from PIL import Image
+            import ctypes
 
-            with mss.mss() as sct:
-                if hwnd:
-                    import win32gui
-                    rect = win32gui.GetWindowRect(hwnd)
-                    region = {"left": rect[0], "top": rect[1],
-                              "width": rect[2] - rect[0], "height": rect[3] - rect[1]}
-                else:
-                    region = sct.monitors[1]
+            if hwnd is None:
+                hwnd = win32gui.GetForegroundWindow()
 
-                raw = sct.grab(region)
-                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+            rect = win32gui.GetWindowRect(hwnd)
+            width = rect[2] - rect[0]
+            height = rect[3] - rect[1]
+
+            if width <= 0 or height <= 0:
+                return None
+
+            hwnd_dc = win32gui.GetWindowDC(hwnd)
+            mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+            save_dc = mfc_dc.CreateCompatibleDC()
+            save_bmp = win32ui.CreateBitmap()
+            save_bmp.CreateCompatibleBitmap(mfc_dc, width, height)
+            save_dc.SelectObject(save_bmp)
+
+            # PW_RENDERFULLCONTENT (0x2) renders hardware-accelerated content too
+            ok = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
+
+            bmpinfo = save_bmp.GetInfo()
+            bmpstr = save_bmp.GetBitmapBits(True)
+
+            win32gui.DeleteObject(save_bmp.GetHandle())
+            save_dc.DeleteDC()
+            mfc_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+            if ok:
+                img = Image.frombuffer(
+                    "RGB",
+                    (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
+                    bmpstr, "raw", "BGRX", 0, 1,
+                )
                 buf = io.BytesIO()
                 img.save(buf, "PNG")
                 return buf.getvalue()
+
+            # PrintWindow failed — fall back to screen-region capture
+            logger.warning("[WindowsAdapter:get_screenshot] PrintWindow failed; falling back to mss")
+            raise RuntimeError("PrintWindow returned 0")
+
         except Exception as e:
-            print(f"[WindowsAdapter:get_screenshot] {e}")
-            traceback.print_exc()
-            return None
+            logger.debug(f"[WindowsAdapter:get_screenshot] PrintWindow path failed ({e}); trying mss")
+            try:
+                import mss
+                from PIL import Image
+                import win32gui
+
+                with mss.mss() as sct:
+                    if hwnd:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        region = {"left": rect[0], "top": rect[1],
+                                  "width": rect[2] - rect[0], "height": rect[3] - rect[1]}
+                    else:
+                        region = sct.monitors[1]
+                    raw = sct.grab(region)
+                    img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                    buf = io.BytesIO()
+                    img.save(buf, "PNG")
+                    return buf.getvalue()
+            except Exception as e2:
+                print(f"[WindowsAdapter:get_screenshot] {e2}")
+                traceback.print_exc()
+                return None
 
     def perform_action(self, action: str, element_id: str = None,
                        value: Any = None, hwnd=None) -> Dict:
