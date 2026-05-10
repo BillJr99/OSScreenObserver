@@ -102,16 +102,44 @@ class WindowInfo:
     pid: int
     bounds: Bounds
     is_focused: bool
+    # Stable cross-call identifier; populated by adapters (design doc §6.1).
+    window_uid: str = ""
+    # Optional multi-monitor metadata (design doc §6.3).  Populated when the
+    # adapter knows; left None on adapters that do not.
+    monitor_index: Optional[int] = None
+    scale_factor: Optional[float] = None
+    logical_bounds: Optional[Bounds] = None
+    physical_bounds: Optional[Bounds] = None
 
     def to_dict(self) -> Dict:
-        return {
+        d: Dict[str, Any] = {
             "handle": str(self.handle),
             "title": self.title,
             "process": self.process_name,
             "pid": self.pid,
             "bounds": self.bounds.to_dict(),
             "focused": self.is_focused,
+            "window_uid": self.window_uid,
         }
+        if self.monitor_index is not None:
+            d["monitor_index"] = self.monitor_index
+        if self.scale_factor is not None:
+            d["scale_factor"] = self.scale_factor
+        if self.logical_bounds is not None:
+            d["logical_bounds"] = self.logical_bounds.to_dict()
+        if self.physical_bounds is not None:
+            d["physical_bounds"] = self.physical_bounds.to_dict()
+        return d
+
+
+# ─── Window resolution result ────────────────────────────────────────────────
+
+@dataclass
+class WindowResolution:
+    info: Optional[WindowInfo]
+    warning: Optional[str]
+    used_uid: bool
+    requested_uid: Optional[str]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,20 +149,35 @@ class WindowInfo:
 class MockAdapter:
     """Synthetic data adapter for development and testing."""
 
+    def __init__(self) -> None:
+        import secrets as _s
+        self._nonce = _s.token_hex(4)
+        # Optional scenario hook (design doc §15.5).  Set by main.py when
+        # --scenario is supplied; methods route through the scenario when
+        # active so that input actions can drive state transitions.
+        self.scenario: Optional[Any] = None
+
     def get_windows_above_bounds(self, hwnd) -> List["Bounds"]:
         return []  # Mock assumes the target window is on top
 
     def list_windows(self) -> List[WindowInfo]:
+        if self.scenario is not None:
+            return self.scenario.list_windows(self._nonce)
         return [
             WindowInfo(1001, "Untitled — Notepad", "notepad.exe", 1234,
-                       Bounds(80, 60, 800, 600), True),
+                       Bounds(80, 60, 800, 600), True,
+                       window_uid=f"mock:0:{self._nonce}"),
             WindowInfo(1002, "GitHub · Where software is built — Google Chrome",
-                       "chrome.exe", 5678, Bounds(0, 0, 1920, 1050), False),
+                       "chrome.exe", 5678, Bounds(0, 0, 1920, 1050), False,
+                       window_uid=f"mock:1:{self._nonce}"),
             WindowInfo(1003, "screen_observer.py — Visual Studio Code",
-                       "code.exe", 9012, Bounds(960, 0, 960, 1050), False),
+                       "code.exe", 9012, Bounds(960, 0, 960, 1050), False,
+                       window_uid=f"mock:2:{self._nonce}"),
         ]
 
     def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        if self.scenario is not None:
+            return self.scenario.get_element_tree(hwnd)
         root = UIElement("root", "Untitled — Notepad", "Window",
                          bounds=Bounds(80, 60, 800, 600))
 
@@ -223,6 +266,12 @@ class MockAdapter:
 
     def perform_action(self, action: str, element_id: str = None,
                        value: Any = None, hwnd=None) -> Dict:
+        if self.scenario is not None:
+            handled = self.scenario.handle_action(action=action,
+                                                   element_id=element_id,
+                                                   value=value, hwnd=hwnd)
+            if handled is not None:
+                return handled
         return {
             "success": True,
             "action": action,
@@ -280,6 +329,7 @@ class WindowsAdapter:
                         handle=hwnd, title=title, process_name=proc_name, pid=pid,
                         bounds=Bounds(rect[0], rect[1], w, h),
                         is_focused=(hwnd == fg),
+                        window_uid=f"win:{pid}:{hwnd}",
                     ))
                 except Exception as inner:
                     logger.debug(f"[WindowsAdapter:list_windows:_cb] {inner}")
@@ -511,7 +561,8 @@ class MacOSAdapter:
             r = subprocess.run(["osascript", "-e", script],
                                capture_output=True, text=True, timeout=5)
             apps = [a.strip() for a in r.stdout.split(",") if a.strip()]
-            return [WindowInfo(i, a, a, 0, Bounds(0, 0, 1920, 1080), i == 0)
+            return [WindowInfo(i, a, a, 0, Bounds(0, 0, 1920, 1080), i == 0,
+                               window_uid=f"mac:{i}")
                     for i, a in enumerate(apps)]
         except Exception as e:
             print(f"[MacOSAdapter:list_windows] {e}")
@@ -582,7 +633,8 @@ class LinuxAdapter:
                 x, y, w, h = int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])
                 title = parts[8] if len(parts) > 8 else "(no title)"
                 windows.append(WindowInfo(hwnd, title, title, 0,
-                                          Bounds(x, y, w, h), False))
+                                          Bounds(x, y, w, h), False,
+                                          window_uid=f"x11:{hwnd:x}"))
             return windows
         except Exception as e:
             print(f"[LinuxAdapter:list_windows] {e}")
@@ -706,6 +758,130 @@ class ScreenObserver:
         if 0 <= index < len(windows):
             return windows[index]
         return None
+
+    def window_by_uid(self, windows: List[WindowInfo],
+                      uid: Optional[str]) -> Optional[WindowInfo]:
+        """Resolve a window by stable uid; returns None if not found."""
+        if not uid or not windows:
+            return None
+        for w in windows:
+            if w.window_uid == uid:
+                return w
+        return None
+
+    def resolve_window(self, windows: List[WindowInfo],
+                       window_uid: Optional[str],
+                       window_index: Optional[int]) -> "WindowResolution":
+        """Apply the design-doc precedence: uid wins; warn when both given."""
+        if window_uid:
+            info = self.window_by_uid(windows, window_uid)
+            warning = ("both window_index and window_uid given; window_uid used"
+                       if window_index is not None else None)
+            return WindowResolution(info=info, warning=warning,
+                                    used_uid=True, requested_uid=window_uid)
+        info = self.window_by_index(windows, window_index)
+        return WindowResolution(info=info, warning=None,
+                                used_uid=False, requested_uid=None)
+
+    # ── Monitors / DPI (design doc §6.3) ──────────────────────────────────────
+
+    def get_monitors(self) -> List[Dict[str, Any]]:
+        """Return per-monitor metadata via mss."""
+        try:
+            import mss
+            with mss.mss() as sct:
+                mons = sct.monitors  # [0] is union; [1..] are individual
+                out: List[Dict[str, Any]] = []
+                for i, m in enumerate(mons[1:]):
+                    out.append({
+                        "index": i,
+                        "primary": (i == 0),
+                        "bounds":  {"x": m["left"], "y": m["top"],
+                                    "width": m["width"], "height": m["height"]},
+                        "scale_factor": 1.0,
+                        "logical_bounds":  {"x": m["left"], "y": m["top"],
+                                            "width": m["width"], "height": m["height"]},
+                        "physical_bounds": {"x": m["left"], "y": m["top"],
+                                            "width": m["width"], "height": m["height"]},
+                    })
+                return out
+        except Exception:
+            return []
+
+    # ── Capability discovery (design doc §6.4) ────────────────────────────────
+
+    def get_capabilities(self) -> Dict[str, Any]:
+        adapter_name = type(self._adapter).__name__
+        is_windows = adapter_name == "WindowsAdapter"
+        is_macos   = adapter_name == "MacOSAdapter"
+        is_linux   = adapter_name == "LinuxAdapter"
+        is_mock    = adapter_name == "MockAdapter"
+
+        # Probe optional libs.
+        def _has(mod: str) -> bool:
+            try:
+                __import__(mod)
+                return True
+            except Exception:
+                return False
+
+        if is_macos:
+            ax_tree = _has("AppKit") or _has("ApplicationServices") or _has("Cocoa")
+        elif is_linux:
+            ax_tree = _has("pyatspi")
+        else:
+            ax_tree = is_windows or is_mock
+
+        return {
+            "ok": True,
+            "platform": PLATFORM,
+            "adapter": adapter_name,
+            "version": (self.config.get("mcp", {}) or {}).get("version", "0.2.0"),
+            "protocol_version": 2,
+            "supports": {
+                "accessibility_tree":  bool(ax_tree),
+                "uia_invoke":          is_windows,
+                "occlusion_detection": is_windows or is_mock or _has("Quartz") or _has("Xlib"),
+                "drag":                True,
+                "ocr":                 _has("pytesseract"),
+                "vlm":                 _has("anthropic"),
+                "redaction":           True,
+                "scenarios":           is_mock,
+                "tracing":             True,
+                "replay":              True,
+                "image_blur":          _has("PIL"),
+            },
+            "config": {
+                "tree_max_depth": (self.config.get("tree", {}) or {}).get("max_depth", 8),
+                "ascii_grid": {
+                    "width":  (self.config.get("ascii_sketch", {}) or {}).get("grid_width",  110),
+                    "height": (self.config.get("ascii_sketch", {}) or {}).get("grid_height",  38),
+                },
+            },
+        }
+
+    # ── Element occlusion (design doc D14) ────────────────────────────────────
+
+    def is_element_occluded(self, element_bounds: Bounds, target_hwnd: Any,
+                            all_windows: List[WindowInfo]) -> bool:
+        """
+        True iff every pixel of *element_bounds* is covered by another window
+        above the target in Z-order, or the element lies entirely off-screen.
+
+        On platforms without Z-order info, returns False (assumed visible).
+        """
+        screen = self.get_screen_bounds()
+        clipped = _intersect_bounds(element_bounds, screen)
+        if not clipped:
+            return True
+        regions = [clipped]
+        try:
+            occluders = self._adapter.get_windows_above_bounds(target_hwnd)
+        except Exception:
+            occluders = []
+        for occ in occluders:
+            regions = _subtract_rect(regions, occ)
+        return not regions
 
     # ── Visibility helpers ────────────────────────────────────────────────────
 

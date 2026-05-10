@@ -26,6 +26,8 @@ from flask_cors import CORS
 from ascii_renderer import ASCIIRenderer
 from description import DescriptionGenerator
 from observer import ScreenObserver
+import tools as _tools
+from errors import http_status_for
 
 logger = logging.getLogger(__name__)
 
@@ -685,6 +687,27 @@ def create_web_app(
     app = Flask(__name__)
     CORS(app)
 
+    ctx = _tools.ToolContext(observer=observer, renderer=renderer,
+                              describer=describer, config=config)
+
+    def _tool_response(name: str, args: dict):
+        result = _tools.dispatch(ctx, name, args)
+        if not result.get("ok", True):
+            code = (result.get("error") or {}).get("code", "Internal")
+            return jsonify(result), http_status_for(code)
+        return jsonify(result)
+
+    def _merge_query(extra: Optional[dict] = None) -> dict:
+        out = {k: v for k, v in request.args.items()}
+        if "window_index" in out:
+            try:
+                out["window_index"] = int(out["window_index"])
+            except (TypeError, ValueError):
+                pass
+        if extra:
+            out.update(extra)
+        return out
+
     # ── UI ────────────────────────────────────────────────────────────────────
 
     @app.route("/")
@@ -969,5 +992,51 @@ def create_web_app(
             print(f"[web_inspector:/api/action] {e}")
             traceback.print_exc()
             return jsonify({"success": False, "error": str(e)}), 500
+
+    # ── P1: identity, capabilities, element-targeted actions ─────────────────
+
+    @app.route("/api/capabilities")
+    def api_capabilities():
+        return _tool_response("get_capabilities", {})
+
+    @app.route("/api/monitors")
+    def api_monitors():
+        return _tool_response("get_monitors", {})
+
+    @app.route("/api/find_element")
+    def api_find_element():
+        return _tool_response("find_element", _merge_query())
+
+    @app.route("/api/element/click", methods=["POST"])
+    def api_element_click():
+        return _tool_response("click_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/focus", methods=["POST"])
+    def api_element_focus():
+        return _tool_response("focus_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/set_value", methods=["POST"])
+    def api_element_set_value():
+        return _tool_response("set_value", request.get_json(force=True) or {})
+
+    @app.route("/api/element/invoke", methods=["POST"])
+    def api_element_invoke():
+        return _tool_response("invoke_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/select", methods=["POST"])
+    def api_element_select():
+        return _tool_response("select_option", request.get_json(force=True) or {})
+
+    @app.route("/api/healthz")
+    def api_healthz():
+        from session import get_session
+        s = get_session()
+        return jsonify({
+            "ok": True,
+            "uptime_s": int(s.steps.uptime_s),
+            "step_count": s.steps.count,
+            "adapter": type(observer._adapter).__name__,
+            "version": (config.get("mcp", {}) or {}).get("version", "0.2.0"),
+        })
 
     return app

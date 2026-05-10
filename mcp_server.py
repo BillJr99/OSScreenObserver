@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 from observer import ScreenObserver, WindowInfo
 from ascii_renderer import ASCIIRenderer
 from description import DescriptionGenerator
+import tools as _tools
 
 logger = logging.getLogger(__name__)
 
@@ -286,10 +287,149 @@ _TOOLS: List[Dict] = [
             "properties": {
                 "window_index": {
                     "type": "integer",
-                    "description": "Window index from list_windows (required).",
+                    "description": "Window index from list_windows.",
+                },
+                "window_uid": {
+                    "type": "string",
+                    "description": "Stable window identifier from list_windows.",
                 },
             },
-            "required": ["window_index"],
+            "required": [],
+        },
+    },
+
+    # ── P1: identity, capabilities, element actions ──────────────────────────
+
+    {
+        "name": "get_capabilities",
+        "description": (
+            "Report the platform, adapter, and which features are supported in "
+            "this process.  Call once at session start to choose tools that "
+            "match the environment (e.g. accessibility_tree=false on a "
+            "platform without a real AX adapter)."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_monitors",
+        "description": (
+            "Enumerate monitors with bounds, scale factor, and logical/physical "
+            "rectangles.  Useful for click coordinate-space conversion on "
+            "high-DPI multi-monitor setups."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "find_element",
+        "description": (
+            "Resolve an element selector to a concrete element_id and bounds. "
+            "Selector grammar accepts XPath-ish (Window/Pane/Button[name=\"OK\"]) "
+            "or CSS-ish (Window > Pane Button[name=\"OK\"]).  Returns "
+            "ambiguous_matches > 1 to flag brittle selectors."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+            },
+            "required": ["selector"],
+        },
+    },
+    {
+        "name": "click_element",
+        "description": (
+            "Click an element identified by selector or element_id.  Returns "
+            "an ActionReceipt with before/after tree hashes, changed flag, and "
+            "any new dialogs that appeared."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":      {"type": "string"},
+                "element_id":    {"type": "string"},
+                "window_uid":    {"type": "string"},
+                "window_index":  {"type": "integer"},
+                "button":        {"type": "string", "enum": ["left", "right", "middle"]},
+                "count":         {"type": "integer"},
+                "dry_run":       {"type": "boolean"},
+                "confirm_token": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "focus_element",
+        "description": "Give keyboard focus to an element.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "dry_run":      {"type": "boolean"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "set_value",
+        "description": (
+            "Set the textual value of an editable element (focuses, selects all "
+            "if clear_first=true, then types value)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "value":        {"type": "string"},
+                "clear_first":  {"type": "boolean"},
+                "dry_run":      {"type": "boolean"},
+            },
+            "required": ["value"],
+        },
+    },
+    {
+        "name": "invoke_element",
+        "description": (
+            "Invoke an element's primary action.  On Windows this prefers the "
+            "UIA InvokePattern; otherwise behaves like click_element."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "dry_run":      {"type": "boolean"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "select_option",
+        "description": (
+            "Open a combo-box or list-style element and click the option named "
+            "option_name (or at zero-based option_index)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "selector":     {"type": "string"},
+                "element_id":   {"type": "string"},
+                "window_uid":   {"type": "string"},
+                "window_index": {"type": "integer"},
+                "option_name":  {"type": "string"},
+                "option_index": {"type": "integer"},
+                "dry_run":      {"type": "boolean"},
+            },
+            "required": [],
         },
     },
 ]
@@ -386,6 +526,14 @@ class MCPServer:
 
     def _dispatch(self, name: str, args: Dict) -> Any:
         """Route a tools/call to the appropriate handler."""
+        # New centralised tools (P1+) live in tools.py.
+        if name in _tools.REGISTRY:
+            ctx = _tools.ToolContext(
+                observer=self.observer, renderer=self.renderer,
+                describer=self.describer, config=self.config,
+            )
+            return _tools.dispatch(ctx, name, args)
+
         try:
             windows = self.observer.list_windows()
             idx     = args.get("window_index")
