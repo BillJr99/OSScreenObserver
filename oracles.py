@@ -54,9 +54,19 @@ def evaluate(observer: ScreenObserver,
         except Exception as e:
             logger.exception(f"oracle {kind} crashed")
             passed, observed = False, f"error: {type(e).__name__}: {e}"
-        results.append({"kind": kind, "passed": bool(passed),
-                        "observed": observed,
-                        "args": {k: v for k, v in p.items() if k != "kind"}})
+        entry: Dict[str, Any] = {
+            "kind": kind, "passed": bool(passed),
+            "observed": observed,
+            "args": {k: v for k, v in p.items() if k != "kind"},
+        }
+        # When a predicate cannot be evaluated (missing optional
+        # dependency), surface the structured error code so callers can
+        # branch on it rather than mistaking it for a real failure.
+        if isinstance(observed, dict) and observed.get("unsupported"):
+            entry["error_code"] = observed.get(
+                "code", Code.PREDICATE_UNSUPPORTED,
+            )
+        results.append(entry)
         if not passed:
             all_passed = False
 
@@ -172,8 +182,13 @@ def _run(kind: str, p: Dict[str, Any], observer: ScreenObserver,
             from PIL import Image
             import numpy as np
             from skimage.metrics import structural_similarity as ssim
-        except Exception:
-            return False, "scikit-image not installed"
+        except Exception as e:
+            return False, {
+                "unsupported": True,
+                "code": Code.PREDICATE_UNSUPPORTED,
+                "reason": (f"scikit-image / Pillow / numpy required for "
+                           f"screenshot_similar: {e}"),
+            }
         ref_path = p.get("reference_path")
         min_ssim = float(p.get("min_ssim", 0.95))
         if not ref_path or not info:

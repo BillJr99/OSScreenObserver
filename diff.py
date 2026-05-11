@@ -48,12 +48,32 @@ def _diff_node(path: str, a: Dict, b: Dict, out: List[Dict[str, Any]]) -> None:
     a_children = a.get("children", []) or []
     b_children = b.get("children", []) or []
 
+    # Build (role, name) -> first position maps so we can detect moves.
+    # When a sibling identity appears more than once on EITHER side we
+    # can no longer unambiguously match across the two lists; in that
+    # case the duplicates are excluded from move detection and fall
+    # through to the add/remove pairs below.
+    a_counts: Dict[Tuple[str, str], int] = {}
+    b_counts: Dict[Tuple[str, str], int] = {}
+    for n in a_children:
+        a_counts[_identity(n)] = a_counts.get(_identity(n), 0) + 1
+    for n in b_children:
+        b_counts[_identity(n)] = b_counts.get(_identity(n), 0) + 1
+    _ambiguous = {ident for ident, c in a_counts.items() if c > 1} | \
+                 {ident for ident, c in b_counts.items() if c > 1}
+
     a_id_to_pos: Dict[Tuple[str, str], int] = {}
     for idx, n in enumerate(a_children):
-        a_id_to_pos.setdefault(_identity(n), idx)
+        ident = _identity(n)
+        if ident in _ambiguous:
+            continue
+        a_id_to_pos.setdefault(ident, idx)
     b_id_to_pos: Dict[Tuple[str, str], int] = {}
     for idx, n in enumerate(b_children):
-        b_id_to_pos.setdefault(_identity(n), idx)
+        ident = _identity(n)
+        if ident in _ambiguous:
+            continue
+        b_id_to_pos.setdefault(ident, idx)
 
     matched_b: set = set()
     matched_a: set = set()

@@ -248,9 +248,12 @@ class ScenarioAdapter:
             if on_target and on_target != target_spec_id:
                 continue
             tname = on.get("target_name")
-            if tname and (target_spec_id is None or
-                          self._spec_name(tname) != tname):
-                continue
+            if tname:
+                if target_spec_id is None:
+                    continue
+                actual_name = self._spec_name_for_id(target_spec_id)
+                if actual_name != tname:
+                    continue
             text_regex = on.get("text_regex")
             captured: Dict[str, str] = {}
             if text_regex:
@@ -307,23 +310,52 @@ class ScenarioAdapter:
         for spec_w in state.windows:
             if spec_w.tree is None:
                 continue
-            sid = self._lookup(spec_w.tree, element_id, "root")
-            if sid:
+            found, sid = self._lookup(spec_w.tree, element_id, "root")
+            if found:
                 return sid
         return None
 
     def _lookup(self, e: _ElemSpec, target_id: str,
-                cur_id: str) -> Optional[str]:
+                cur_id: str) -> Tuple[bool, Optional[str]]:
+        """
+        Walk the spec tree.  Returns (found, spec_id_or_None).
+
+        Returning a tuple rather than Optional[str] lets the caller
+        distinguish "matched a node whose .id is None" from "no match".
+        Without the explicit found flag, an id=None match was previously
+        treated as a miss and traversal continued into other branches,
+        sometimes returning the wrong spec id.
+        """
         if cur_id == target_id:
-            return e.id
+            return True, e.id
         for i, c in enumerate(e.children):
-            r = self._lookup(c, target_id, f"{cur_id}.{i}")
-            if r is not None:
-                return r
+            found, r = self._lookup(c, target_id, f"{cur_id}.{i}")
+            if found:
+                return True, r
+        return False, None
+
+    def _spec_name_for_id(self, target_spec_id: str) -> Optional[str]:
+        """Resolve a spec id back to the element's .name (or None)."""
+        if not target_spec_id:
+            return None
+        state = self.scenario.states[self.scenario.current_state]
+        for spec_w in state.windows:
+            if spec_w.tree is None:
+                continue
+            name = self._name_by_spec_id(spec_w.tree, target_spec_id)
+            if name is not None:
+                return name
         return None
 
-    def _spec_name(self, name: str) -> str:
-        return name
+    def _name_by_spec_id(self, e: _ElemSpec,
+                         target_spec_id: str) -> Optional[str]:
+        if e.id == target_spec_id:
+            return e.name or ""
+        for c in e.children:
+            n = self._name_by_spec_id(c, target_spec_id)
+            if n is not None:
+                return n
+        return None
 
     def _when_matches(self, when: List[Dict[str, Any]],
                       win: Optional[_WindowSpec]) -> bool:

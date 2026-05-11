@@ -113,3 +113,29 @@ def test_oracle_unknown_kind(client):
     assert r["ok"] is True
     assert r["all_passed"] is False
     assert r["results"][0]["passed"] is False
+
+
+def test_oracle_screenshot_similar_unsupported_surfaces_error_code(client,
+                                                                   monkeypatch):
+    """When scikit-image isn't installed, screenshot_similar must mark the
+    predicate as PredicateUnsupported so callers can branch on it."""
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **kw):
+        if name.startswith("skimage"):
+            raise ImportError("simulated")
+        return real_import(name, *a, **kw)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    r = client.post("/api/assert_state", json={
+        "predicate": [{"kind": "screenshot_similar",
+                       "reference_path": "/dev/null"}],
+    }).get_json()
+    assert r["ok"] is True
+    assert r["all_passed"] is False
+    entry = r["results"][0]
+    assert entry["passed"] is False
+    assert entry.get("error_code") == "PredicateUnsupported"
+    assert isinstance(entry["observed"], dict)
+    assert entry["observed"].get("unsupported") is True

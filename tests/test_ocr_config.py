@@ -107,6 +107,22 @@ def test_diagnose_error_includes_hint(tmp_path):
     assert "hint" in d
 
 
+def test_ascii_renderer_applies_tesseract_cmd_from_config(tmp_path):
+    """ASCIIRenderer must apply ocr.tesseract_cmd up-front so OCR overlay
+    works even when no other module has touched pytesseract yet."""
+    import importlib, ocr_util, ascii_renderer
+    importlib.reload(ocr_util)
+    # Construct a renderer with a known tesseract_cmd; it should be
+    # applied to pytesseract immediately.
+    target = str(tmp_path / "tesseract-test")
+    ascii_renderer.ASCIIRenderer({
+        "ascii_sketch": {"grid_width": 80, "grid_height": 20},
+        "ocr": {"tesseract_cmd": target},
+    })
+    import pytesseract
+    assert pytesseract.pytesseract.tesseract_cmd == target
+
+
 def test_get_ocr_tool_error_includes_hint(client):
     """tools.get_ocr surfaces the install hint when the binary is missing."""
     # Configure a bogus tesseract_cmd so the call fails predictably.

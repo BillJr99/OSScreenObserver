@@ -67,3 +67,29 @@ def test_json_patch_add_remove():
     b = _n("Window", "x", children=[])
     p = diff_json_patch(a, b)
     assert any(op["op"] == "remove" for op in p)
+
+
+def test_duplicate_identity_siblings_not_silently_moved():
+    """Two siblings with the same (role, name) on either side must NOT be
+    matched as moves — the setdefault collapse would have picked the
+    first occurrence and silently mapped it across the lists, producing
+    a misleading move op instead of clean add/remove pairs."""
+    # Two anonymous Buttons in different orders.  Without de-dup, the
+    # diff would call this a no-op or a single move; the correct answer
+    # is to treat them as ambiguous and emit removes + adds.
+    a = _n("Window", "w", children=[_n("Button", ""), _n("Button", "")])
+    b = _n("Window", "w", children=[_n("Button", ""), _n("Button", "")])
+    changes = diff_custom(a, b)
+    # When duplicates are excluded from move detection, identical lists
+    # produce add+remove pairs for every duplicated child.
+    moves = [c for c in changes if c["op"] == "move"]
+    assert moves == [], f"unexpected moves on duplicate identities: {moves}"
+
+
+def test_unique_siblings_still_matched_as_move():
+    """The duplicate-skip must not break clean reorderings of distinct
+    siblings."""
+    a = _n("Window", "w", children=[_n("Button", "OK"), _n("Button", "Cancel")])
+    b = _n("Window", "w", children=[_n("Button", "Cancel"), _n("Button", "OK")])
+    changes = diff_custom(a, b)
+    assert any(c["op"] == "move" for c in changes)
