@@ -218,6 +218,7 @@ details > summary::-webkit-details-marker { display: none; }
 }
 .field input:focus { border-color: var(--cyan); }
 .field input.small { width: 70px; }
+.field input[type="checkbox"] { width: auto; padding: 0; }
 .action-btn {
   background: var(--panel); border: 1px solid var(--border2); color: var(--amber);
   font-family: var(--mono); font-size: 10px; padding: 6px 14px; cursor: pointer;
