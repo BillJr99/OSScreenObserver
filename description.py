@@ -205,22 +205,26 @@ class DescriptionGenerator:
             return "\n".join(lines)
 
         except ImportError:
-            return "[pytesseract not installed — run: pip install pytesseract]"
+            from ocr_util import INSTALL_HINT as _HINT
+            return ("[pytesseract not installed — run `pip install pytesseract`. "
+                    f"{_HINT}]")
         except Exception as e:
             print(f"[DescriptionGenerator:from_ocr] {e}")
             traceback.print_exc()
             # Surface the diagnostic so the user can see what tesseract_cmd
-            # resolved to (or didn't).
+            # resolved to (or didn't), plus the install/config hint.
             try:
-                from ocr_util import diagnose as _ocr_diag
+                from ocr_util import diagnose as _ocr_diag, INSTALL_HINT
                 diag = _ocr_diag(self.config)
             except Exception:
                 diag = {}
+                INSTALL_HINT = ""
             return (f"[OCR failed: {e}; "
                     f"tesseract_cmd={diag.get('configured_path')!r}, "
                     f"exists={diag.get('configured_path_exists')}, "
                     f"version={diag.get('version')}, "
-                    f"on_PATH={diag.get('path_discovered')!r}]")
+                    f"on_PATH={diag.get('path_discovered')!r}.  "
+                    f"{INSTALL_HINT}]")
 
     # ── VLM (Claude Vision) ───────────────────────────────────────────────────
 

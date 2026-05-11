@@ -141,10 +141,12 @@ def _run(kind: str, p: Dict[str, Any], observer: ScreenObserver,
                 import io
                 from PIL import Image
                 import pytesseract
-                from ocr_util import configure as _ocr_configure
+                from ocr_util import configure as _ocr_configure, INSTALL_HINT
                 _ocr_configure(config)
             except Exception:
-                return False, "ocr unavailable"
+                from ocr_util import INSTALL_HINT
+                return False, {"ocr_error": "ocr unavailable",
+                               "hint": INSTALL_HINT}
             shot = observer.get_screenshot(info.handle)
             if shot:
                 try:
@@ -152,7 +154,8 @@ def _run(kind: str, p: Dict[str, Any], observer: ScreenObserver,
                 except pytesseract.TesseractNotFoundError:
                     from ocr_util import diagnose as _ocr_diag
                     return False, {"ocr_error": "tesseract not found",
-                                   "diagnose": _ocr_diag(config)}
+                                   "diagnose": _ocr_diag(config),
+                                   "hint": INSTALL_HINT}
                 if re.search(rx, text or ""):
                     return True, {"source": "ocr"}
         return False, "no match"

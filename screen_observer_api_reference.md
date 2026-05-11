@@ -517,8 +517,13 @@ Return a textual description of the window via one of three analysis modes.
 - `vlm` requires `ANTHROPIC_API_KEY` in the environment and
   `"vlm": {"enabled": true}` in `config.json`. Returns a disabled message
   string if not configured.
-- `ocr` requires `pytesseract` installed and Tesseract on the system PATH.
-  Returns a disabled message string if not configured.
+- `ocr` requires `pytesseract` installed and the Tesseract binary either on
+  the system PATH or set as `ocr.tesseract_cmd` in `config.json`. On Windows
+  the installer does **not** add it to PATH — set the full path explicitly,
+  escaping backslashes (`"c:\\Program Files\\Tesseract-OCR\\tesseract.exe"`)
+  or using forward slashes. Returns a disabled message string if not
+  configured; `GET /api/healthz` reports the resolved path and any
+  configuration error.
 
 ---
 
