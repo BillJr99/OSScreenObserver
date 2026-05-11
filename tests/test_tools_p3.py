@@ -40,12 +40,10 @@ def test_screenshot_cropped(client):
     assert "data" in r
 
 
-def test_description_mode_auto(client):
-    r = client.get(
-        "/api/description?window_index=0&mode=auto&max_tokens=15"
-    ).get_json()
+def test_description_combined(client):
+    r = client.get("/api/description?window_index=0&max_tokens=15").get_json()
     assert r["ok"] is True
-    assert r["effective_mode"] in ("accessibility", "ocr", "vlm")
+    assert r["effective_mode"] == "combined"
     assert r["truncated"] is True
 
 

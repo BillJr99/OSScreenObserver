@@ -71,6 +71,7 @@ def _resolve_window(ctx: ToolContext, args: Dict[str, Any]
         windows,
         window_uid=args.get("window_uid"),
         window_index=args.get("window_index"),
+        window_title=args.get("window_title"),
     )
     return windows, res
 
@@ -91,32 +92,50 @@ def _resolve_element(tree: UIElement, args: Dict[str, Any]
     selector = args.get("selector")
     element_id = args.get("element_id")
 
+    # Try selector first, then element_id.  When both are provided, element_id
+    # acts as a fallback so a bad/unmatched selector doesn't block the call.
+    selector_err = None
     if selector:
         try:
             parsed = sel.parse(selector)
-        except sel.SelectorParseError as e:
-            return None, None, error_dict(Code.BAD_REQUEST,
-                                          f"selector parse error: {e}",
-                                          selector=selector)
-        result = sel.resolve(tree, parsed)
-        if not result.matches:
-            return None, None, error_dict(
+            result = sel.resolve(tree, parsed)
+            if result.matches:
+                return result.matches[0], parsed.canonical(), None
+            selector_err = error_dict(
                 Code.ELEMENT_NOT_FOUND,
                 f"no element matches selector {selector!r}",
                 selector=selector,
             )
-        return result.matches[0], parsed.canonical(), None
+        except sel.SelectorParseError as e:
+            selector_err = error_dict(Code.BAD_REQUEST,
+                                      f"selector parse error: {e}",
+                                      selector=selector)
 
     if element_id:
         elem = _find_by_id(tree, element_id)
-        if elem is None:
-            return None, None, error_dict(
-                Code.ELEMENT_NOT_FOUND,
-                f"no element with id {element_id!r}",
-                element_id=element_id,
-            )
-        derived = sel.selector_for(tree, element_id) or ""
-        return elem, derived, None
+        if elem is not None:
+            derived = sel.selector_for(tree, element_id) or ""
+            return elem, derived, None
+        # element_id didn't match any internal ID — try parsing it as a selector
+        # (LLMs often pass the display-format string e.g. 'TabItem "name"' as an id).
+        try:
+            parsed = sel.parse(element_id)
+            result = sel.resolve(tree, parsed)
+            if result.matches:
+                return result.matches[0], parsed.canonical(), None
+        except (sel.SelectorParseError, Exception):
+            pass
+        # Both failed — prefer selector error if we have one (more informative).
+        if selector_err:
+            return None, None, selector_err
+        return None, None, error_dict(
+            Code.ELEMENT_NOT_FOUND,
+            f"no element with id {element_id!r}",
+            element_id=element_id,
+        )
+
+    if selector_err:
+        return None, None, selector_err
 
     return None, None, error_dict(Code.BAD_REQUEST,
                                   "either element_id or selector is required")
@@ -658,7 +677,8 @@ def bring_to_foreground(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any
                           "window_uid or window_index is required",
                           step_id=step_id)
     result = ctx.observer.bring_to_foreground(info.handle, windows)
-    result["window"] = info.title
+    result["window"]     = info.title
+    result["window_uid"] = info.window_uid
     return annotate_legacy_result(result, step_id=step_id, caused_by_step_id=step_id)
 
 
@@ -1361,7 +1381,7 @@ def get_ocr(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
-    """Description with mode=auto, max_tokens, focus_element support."""
+    """Combined description: accessibility tree + OCR + VLM, returning every available source."""
     step_id, caused_by = _new_step_id("get_screen_description")
     windows, res = _resolve_window(ctx, args)
     info = res.info or _focused_window(windows)
@@ -1372,45 +1392,52 @@ def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id)
-    mode = args.get("mode", "accessibility")
     max_tokens = args.get("max_tokens")
     focus_id = args.get("focus_element")
 
-    # mode=auto pick.
-    effective_mode = mode
-    if mode == "auto":
-        node_count = len(tree.flat_list())
-        if node_count >= 10:
-            effective_mode = "accessibility"
-        elif (ctx.config.get("ocr", {}) or {}).get("enabled", True):
-            effective_mode = "ocr"
-        elif (ctx.config.get("vlm", {}) or {}).get("enabled", False):
-            effective_mode = "vlm"
-        else:
-            effective_mode = "accessibility"
-
-    body = ""
     sub: UIElement = tree
     if focus_id:
         found = _find_by_id(tree, focus_id)
         if found is not None:
             sub = found
 
-    if effective_mode == "accessibility":
-        body = ctx.describer.from_tree(sub, info)
-    elif effective_mode == "ocr":
-        shot = ctx.observer.get_screenshot(info.handle)
-        body = ctx.describer.from_ocr(shot) if shot else "[screenshot unavailable]"
-    elif effective_mode == "vlm":
-        shot = ctx.observer.get_screenshot(info.handle)
-        body = ctx.describer.from_vlm(shot) if shot else "[screenshot unavailable]"
-    elif effective_mode == "combined":
-        shot = ctx.observer.get_screenshot(info.handle)
-        combined = ctx.describer.combined(sub, shot, info)
-        body = "\n\n".join(f"[{k}]\n{v}" for k, v in combined.items())
+    parts: Dict[str, str] = {}
+
+    # Accessibility tree — always attempted.
+    try:
+        parts["accessibility"] = ctx.describer.from_tree(sub, info)
+    except Exception as e:
+        logger.exception("[get_screen_description] accessibility failed: %s", e)
+
+    # OCR — attempted when enabled in config.
+    ocr_enabled = (ctx.config.get("ocr", {}) or {}).get("enabled", True)
+    if ocr_enabled:
+        try:
+            shot = ctx.observer.get_screenshot(info.handle)
+            if shot:
+                parts["ocr"] = ctx.describer.from_ocr(shot)
+            else:
+                logger.warning("[get_screen_description] screenshot unavailable for OCR")
+        except Exception as e:
+            logger.exception("[get_screen_description] OCR failed: %s", e)
+
+    # VLM — attempted when enabled in config.
+    vlm_enabled = (ctx.config.get("vlm", {}) or {}).get("enabled", False)
+    if vlm_enabled:
+        try:
+            shot = ctx.observer.get_screenshot(info.handle)
+            if shot:
+                parts["vlm"] = ctx.describer.from_vlm(shot)
+            else:
+                logger.warning("[get_screen_description] screenshot unavailable for VLM")
+        except Exception as e:
+            logger.exception("[get_screen_description] VLM failed: %s", e)
+
+    body = ""
+    if parts:
+        body = "\n\n".join(f"[{k}]\n{v}" for k, v in parts.items())
     else:
-        return error_dict(Code.BAD_REQUEST, f"unknown mode {mode!r}",
-                          step_id=step_id)
+        body = "[no description available]"
 
     truncated = False
     if max_tokens is not None:
@@ -1423,7 +1450,7 @@ def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
         "ok": True, "success": True,
         "step_id": step_id, "caused_by_step_id": caused_by,
         "window": info.title, "window_uid": info.window_uid,
-        "mode": mode, "effective_mode": effective_mode,
+        "effective_mode": "combined",
         "description": body,
         "truncated": truncated,
     }

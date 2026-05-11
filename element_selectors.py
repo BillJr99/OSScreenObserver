@@ -7,14 +7,17 @@ Supports two grammars sharing a common AST (design doc D3, §6.2):
       Window[name="Notepad"]/Pane/Button[name="OK"]
       Window/*/Button[index=0]
       Document[focused=true]
+      //Button[name="OK"]          leading // = search all descendants
 
   CSS-ish (whitespace = descendant, > = child):
       Window > Pane Button[name="OK"]
       Window > * Button:nth-of-type(1)
+      button[aria-label*="Compose"]   *=  substring match
 
 Predicates (both grammars):
       name="literal"
       name~="regex"           anchored full-match
+      name*="substr"          substring match
       value="..."  / value~="..."
       role="..."
       keyboard_shortcut="..."
@@ -22,6 +25,9 @@ Predicates (both grammars):
       focused=true / focused=false
       index=N                 zero-based among same-role siblings under parent
       :nth-of-type(N)         CSS spelling of [index=N-1]
+      text()="..."            XPath text-node shorthand — matches elem.name
+      aria-label="..."        HTML alias — matches elem.name
+      Hyphenated keys (aria-*, data-*) are supported.
 
 Resolver walks the *unfiltered* tree (filters from §10 are display-only).
 """
@@ -33,17 +39,26 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 
+def _norm(s: str) -> str:
+    """Normalize common Unicode/ASCII lookalike substitutions for forgiving name matching."""
+    return (s
+            .replace('…', '...')   # … → ...  (HORIZONTAL ELLIPSIS)
+            .replace(' ', ' ')     # NBSP → space
+            .replace('–', '-')     # – → -  (EN DASH)
+            .replace('—', '--'))   # — → --  (EM DASH)
+
+
 # ─── AST ──────────────────────────────────────────────────────────────────────
 
 @dataclass
 class Predicate:
     key: str
-    op: str        # '=' or '~='
+    op: str        # '=' | '~=' | '*='
     value: Any     # str | bool | int
 
     def matches(self, elem: Any, sibling_same_role_index: int) -> bool:
         v: Any
-        if self.key == "name":
+        if self.key in ("name", "text", "aria-label", "label"):
             v = elem.name or ""
         elif self.key == "value":
             v = elem.value or ""
@@ -64,12 +79,14 @@ class Predicate:
             return False
 
         if self.op == "=":
-            return v == self.value
+            return _norm(v) == _norm(str(self.value))
         if self.op == "~=":
             try:
                 return re.fullmatch(str(self.value), str(v)) is not None
             except re.error:
                 return False
+        if self.op == "*=":
+            return _norm(str(self.value)) in _norm(str(v))
         return False
 
 
@@ -120,15 +137,17 @@ class SelectorParseError(ValueError):
     pass
 
 
-# Predicates: [key], [key="val"], [key~="re"], [key=true|false], [index=3]
+# Predicates: [key], [key="val"], [key~="re"], [key*="sub"], [key=true|false],
+#             [index=3], [text()="val"], [aria-label*="val"]
 _PRED_RE = re.compile(
     r"""\[\s*
-        (?P<key>[A-Za-z_]\w*)\s*
+        (?P<key>[A-Za-z_][\w-]*(?:\(\))?)\s*  # allow hyphens + text() suffix
         (?:
-            (?P<op>~?=)\s*
+            (?P<op>[*~]?=)\s*
             (?:
-                "(?P<sval>(?:[^"\\]|\\.)*)" |
-                (?P<bval>true|false)        |
+                "(?P<sval>(?:[^"\\]|\\.)*)"  |   # double-quoted
+                '(?P<sqval>[^']*)'            |   # single-quoted (XPath style)
+                (?P<bval>true|false)           |
                 (?P<ival>-?\d+)
             )
         )?\s*
@@ -141,6 +160,11 @@ def parse(text: str) -> Selector:
     s = (text or "").strip()
     if not s:
         raise SelectorParseError("empty selector")
+
+    # LLMs frequently JSON-escape quotes within selector strings, producing
+    # TabItem \"name\" instead of TabItem "name".  Unescape before parsing so
+    # the pre-processing regex and tokenizer see bare delimiters.
+    s = re.sub(r'\\(["\'])', r'\1', s)
 
     if _looks_css(s):
         return _parse_css(s)
@@ -156,13 +180,38 @@ def _looks_css(s: str) -> bool:
         return True
     if ":nth-of-type" in s:
         return True
+    # CSS attribute operators (*=, ^=, $=, |=) unambiguously signal CSS.
+    if "/" not in s and re.search(r"\[[\w-]+[*^$|]=", s):
+        return True
+    # Playwright pseudo-selectors (:has-text, :text) are CSS-style.
+    if re.search(r":(?:has-text|text)\(", s):
+        return True
+    # Leading . (CSS class selector used by Playwright for role names).
+    if re.match(r"\s*\.", s):
+        return True
     return False
+
+
+# Playwright :has-text("…") / :text("…") → name*="…"
+_HASTEXT_RE = re.compile(
+    r""":(?:has-text|text)\(
+        (?:
+            "(?P<dq>[^"]*)"  |
+            '(?P<sq>[^']*)'
+        )
+    \)""",
+    re.VERBOSE,
+)
 
 
 # ── XPath-ish ────────────────────────────────────────────────────────────────
 
 def _parse_xpath(text: str) -> Selector:
-    parts = _split_top_level(text, "/")
+    # Leading // means descendant-or-self: search all descendants for step[0].
+    starts_descendant = text.startswith("//")
+    body = text[2:] if starts_descendant else text
+
+    parts = _split_top_level(body, "/")
     steps: List[Step] = []
     for part in parts:
         part = part.strip()
@@ -172,12 +221,27 @@ def _parse_xpath(text: str) -> Selector:
         steps.append(Step(role=role, predicates=preds, axis="child"))
     if not steps:
         raise SelectorParseError(f"no steps parsed from {text!r}")
+    if starts_descendant:
+        steps[0].axis = "descendant"
     return Selector(steps=steps, grammar="xpath", raw=text)
 
 
 # ── CSS-ish ──────────────────────────────────────────────────────────────────
 
 def _parse_css(text: str) -> Selector:
+    # Pre-process: 'Role "bare name"' / "Role 'bare name'" → 'Role[name="bare name"]'
+    # so that names with internal spaces are not split into descendant-combinator tokens.
+    text = re.sub(
+        r'([A-Za-z_*][\w*]*)\s+("(?:[^"\\]|\\.)*")',
+        lambda m: f'{m.group(1)}[name={m.group(2)}]',
+        text,
+    )
+    text = re.sub(
+        r"([A-Za-z_*][\w*]*)\s+('(?:[^'\\]|\\.)*')",
+        lambda m: f"{m.group(1)}[name={m.group(2)}]",
+        text,
+    )
+
     # Tokenise into role-with-preds and combinators.
     # Combinators: '>' (direct child), whitespace (descendant).
     tokens: List[Tuple[str, str]] = []  # (kind, value): ('comb', '>'|' '), ('step', '...')
@@ -204,7 +268,7 @@ def _parse_css(text: str) -> Selector:
             tokens.append(("comb", ">"))
             i += 1
             continue
-        # Step: role plus optional [pred][pred]...:pseudo
+        # Step: role plus optional [pred][pred]...:pseudo(...)
         j = i
         while j < n and text[j] not in (" ", "\t", "\n", ">"):
             if text[j] == "[":
@@ -214,6 +278,19 @@ def _parse_css(text: str) -> Selector:
                     if text[j] == "[":
                         depth += 1
                     elif text[j] == "]":
+                        depth -= 1
+                        if depth == 0:
+                            j += 1
+                            break
+                    j += 1
+                continue
+            if text[j] == "(":
+                # consume to matching ) — handles :has-text("value with spaces")
+                depth = 0
+                while j < n:
+                    if text[j] == "(":
+                        depth += 1
+                    elif text[j] == ")":
                         depth -= 1
                         if depth == 0:
                             j += 1
@@ -251,17 +328,49 @@ def _parse_css(text: str) -> Selector:
 # ── Shared ───────────────────────────────────────────────────────────────────
 
 def _parse_role_and_preds(token: str) -> Tuple[str, List[Predicate]]:
-    """Split 'Role[k=v][k2~="re"]' into ('Role', [Pred,…])."""
-    m = re.match(r"\s*([A-Za-z_*][\w*]*)\s*", token)
-    if not m:
+    """Split 'Role[k=v][k2~="re"]' into ('Role', [Pred,…]).
+
+    Accepts a leading '.' (Playwright/CSS class prefix) which is stripped —
+    .TabItem is treated as TabItem since the accessibility tree has no classes.
+    """
+    # Allow optional leading '.' (Playwright uses .ClassName for role names).
+    # Also allow role-less tokens that start with ':' (e.g. :text("...")).
+    m = re.match(r"\s*\.?([A-Za-z_*][\w*]*)\s*", token)
+    if m:
+        role = m.group(1)
+        rest = token[m.end():]
+    elif token.lstrip().startswith(":"):
+        role = "*"
+        rest = token.lstrip()
+    else:
         raise SelectorParseError(f"cannot parse step role from {token!r}")
-    role = m.group(1)
-    rest = token[m.end():]
     preds: List[Predicate] = []
     pos = 0
     while pos < len(rest):
         if rest[pos].isspace():
             pos += 1
+            continue
+        # Bare quoted name — 'Button "OK"' → implicit [name="OK"].
+        # This matches the display format the accessibility tree uses.
+        if rest[pos] in ('"', "'"):
+            quote = rest[pos]
+            end = rest.find(quote, pos + 1)
+            if end == -1:
+                raise SelectorParseError(f"unterminated string in {token!r}")
+            preds.append(Predicate(key="name", op="=", value=rest[pos + 1:end]))
+            pos = end + 1
+            continue
+        # Playwright :has-text("…") / :text("…") → name*="…"
+        if rest[pos] == ":" and _HASTEXT_RE.match(rest, pos):
+            ht = _HASTEXT_RE.match(rest, pos)
+            text_val = ht.group("dq") if ht.group("dq") is not None else ht.group("sq")
+            preds.append(Predicate(key="name", op="*=", value=text_val))
+            pos = ht.end()
+            continue
+        # Unknown :pseudo — skip gracefully rather than hard-failing.
+        if rest[pos] == ":" and re.match(r":[a-z-]+\(", rest[pos:]):
+            close = rest.find(")", pos)
+            pos = (close + 1) if close != -1 else len(rest)
             continue
         pm = _PRED_RE.match(rest, pos)
         if not pm:
@@ -269,9 +378,14 @@ def _parse_role_and_preds(token: str) -> Tuple[str, List[Predicate]]:
                 f"cannot parse predicate at {rest[pos:]!r} in {token!r}"
             )
         key = pm.group("key")
+        # Normalize XPath text() function → "text" (maps to elem.name).
+        if key.endswith("()"):
+            key = key[:-2]
         op = pm.group("op") or "="
         if pm.group("sval") is not None:
             val: Any = _unescape(pm.group("sval"))
+        elif pm.group("sqval") is not None:
+            val = pm.group("sqval")  # single-quoted XPath string
         elif pm.group("bval") is not None:
             val = (pm.group("bval") == "true")
         elif pm.group("ival") is not None:
@@ -318,22 +432,47 @@ class ResolveResult:
 def resolve(root: Any, selector: Selector, *, max_matches: int = 10) -> ResolveResult:
     """
     Resolve *selector* against *root* (a UIElement).  The first step is
-    matched against root itself.  Subsequent steps walk children (axis=child)
-    or all descendants (axis=descendant).
+    normally matched against root itself.  If the first step has
+    axis="descendant" (produced by a leading //), all descendants of root
+    are searched instead.  Subsequent steps walk children (axis=child) or
+    all descendants (axis=descendant).
     """
     if not selector.steps:
         return ResolveResult(matches=[], ambiguous=False)
 
     first = selector.steps[0]
-    same_role_idx = 0  # root has no siblings; index=0 always
-    if not first.matches(root, same_role_idx):
-        return ResolveResult(matches=[], ambiguous=False)
+
+    if first.axis == "descendant":
+        # //role[...] — scan every descendant of root for step[0].
+        role_counter: Dict[str, int] = {}
+        initial: List[Any] = []
+        for elem in _descendants(root):
+            idx = role_counter.get(elem.role, 0)
+            role_counter[elem.role] = idx + 1
+            if first.matches(elem, idx):
+                initial.append(elem)
+    else:
+        same_role_idx = 0  # root has no siblings; index=0 always
+        if first.matches(root, same_role_idx):
+            initial = [root]
+        else:
+            # Step[0] doesn't match root — fall back to descendant search so
+            # that bare CSS selectors like button[aria-label*="X"] work without
+            # requiring the caller to know the window role.
+            role_counter_fb: Dict[str, int] = {}
+            initial = []
+            for elem in _descendants(root):
+                idx = role_counter_fb.get(elem.role, 0)
+                role_counter_fb[elem.role] = idx + 1
+                if first.matches(elem, idx):
+                    initial.append(elem)
 
     if len(selector.steps) == 1:
-        return ResolveResult(matches=[root], ambiguous=False)
+        truncated = initial[:max_matches]
+        return ResolveResult(matches=truncated, ambiguous=len(initial) > 1)
 
     # Walk the rest.
-    current: List[Any] = [root]
+    current: List[Any] = initial
     for step in selector.steps[1:]:
         next_matches: List[Any] = []
         for parent in current:
@@ -341,10 +480,10 @@ def resolve(root: Any, selector: Selector, *, max_matches: int = 10) -> ResolveR
                           if step.axis == "child"
                           else _descendants(parent))
             # Compute same-role index per parent group.
-            role_counter: Dict[str, int] = {}
+            step_role_counter: Dict[str, int] = {}
             for child in candidates:
-                idx = role_counter.get(child.role, 0)
-                role_counter[child.role] = idx + 1
+                idx = step_role_counter.get(child.role, 0)
+                step_role_counter[child.role] = idx + 1
                 if step.matches(child, idx):
                     next_matches.append(child)
         current = next_matches

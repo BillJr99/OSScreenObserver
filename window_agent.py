@@ -97,12 +97,25 @@ def wait_for_server(rest_base: str, retries: int = 40, delay: float = 0.5) -> bo
 
 # ─── REST API wrappers ────────────────────────────────────────────────────────
 
+def _win_params(uid: Optional[str], index: Optional[int],
+                title: Optional[str] = None) -> Dict[str, Any]:
+    """Return the minimal window-selector dict: uid > index > title substring."""
+    if uid:
+        return {"window_uid": uid}
+    if index is not None:
+        return {"window_index": index}
+    if title:
+        return {"window_title": title}
+    return {}
+
+
 def api_list_windows(rest: str) -> Dict:
     return _get(rest, "/api/windows")
 
 
-def api_observe(rest: str, window_index: Optional[int]) -> Dict:
-    params = {} if window_index is None else {"window_index": window_index}
+def api_observe(rest: str, uid: Optional[str], index: Optional[int],
+                title: Optional[str] = None) -> Dict:
+    params = _win_params(uid, index, title)
     sketch = _get(rest, "/api/sketch", params)
     desc   = _get(rest, "/api/description", params)
     return {
@@ -112,24 +125,20 @@ def api_observe(rest: str, window_index: Optional[int]) -> Dict:
     }
 
 
-def api_element_tree(rest: str, window_index: Optional[int]) -> Dict:
-    params = {} if window_index is None else {"window_index": window_index}
-    return _get(rest, "/api/structure", params)
+def api_element_tree(rest: str, uid: Optional[str], index: Optional[int],
+                     title: Optional[str] = None) -> Dict:
+    return _get(rest, "/api/structure", _win_params(uid, index, title))
 
 
-def api_description(rest: str, window_index: Optional[int], mode: str = "accessibility") -> Dict:
-    params = {"mode": mode}
-    if window_index is not None:
-        params["window_index"] = window_index
-    return _get(rest, "/api/description", params)
+def api_description(rest: str, uid: Optional[str], index: Optional[int],
+                    title: Optional[str] = None) -> Dict:
+    return _get(rest, "/api/description", _win_params(uid, index, title))
 
 
-def api_sketch(rest: str, window_index: Optional[int],
+def api_sketch(rest: str, uid: Optional[str], index: Optional[int],
                grid_width: Optional[int] = None, grid_height: Optional[int] = None,
-               ocr: bool = False) -> Dict:
-    params: Dict[str, Any] = {}
-    if window_index is not None:
-        params["window_index"] = window_index
+               ocr: bool = False, title: Optional[str] = None) -> Dict:
+    params: Dict[str, Any] = _win_params(uid, index, title)
     if grid_width is not None:
         params["grid_width"] = grid_width
     if grid_height is not None:
@@ -139,17 +148,16 @@ def api_sketch(rest: str, window_index: Optional[int],
     return _get(rest, "/api/sketch", params)
 
 
-def api_screenshot(rest: str, window_index: Optional[int]) -> Dict:
-    params = {} if window_index is None else {"window_index": window_index}
-    return _get(rest, "/api/screenshot", params)
+def api_screenshot(rest: str, uid: Optional[str], index: Optional[int],
+                   title: Optional[str] = None) -> Dict:
+    return _get(rest, "/api/screenshot", _win_params(uid, index, title))
 
 
-def api_full_screenshot(rest: str, window_index: Optional[int],
+def api_full_screenshot(rest: str, uid: Optional[str], index: Optional[int],
                         grid_width: Optional[int] = None,
-                        grid_height: Optional[int] = None) -> Dict:
-    params: Dict[str, Any] = {}
-    if window_index is not None:
-        params["window_index"] = window_index
+                        grid_height: Optional[int] = None,
+                        title: Optional[str] = None) -> Dict:
+    params: Dict[str, Any] = _win_params(uid, index, title)
     if grid_width is not None:
         params["grid_width"] = grid_width
     if grid_height is not None:
@@ -157,12 +165,14 @@ def api_full_screenshot(rest: str, window_index: Optional[int],
     return _get(rest, "/api/full_screenshot", params)
 
 
-def api_visible_areas(rest: str, window_index: int) -> Dict:
-    return _get(rest, "/api/visible_areas", {"window_index": window_index})
+def api_visible_areas(rest: str, uid: Optional[str], index: Optional[int],
+                      title: Optional[str] = None) -> Dict:
+    return _get(rest, "/api/visible_areas", _win_params(uid, index, title))
 
 
-def api_bring_to_foreground(rest: str, window_index: int) -> Dict:
-    return _get(rest, "/api/bring_to_foreground", {"window_index": window_index})
+def api_bring_to_foreground(rest: str, uid: Optional[str], index: Optional[int],
+                            title: Optional[str] = None) -> Dict:
+    return _get(rest, "/api/bring_to_foreground", _win_params(uid, index, title))
 
 
 def api_action(rest: str, payload: Dict) -> Dict:
@@ -171,25 +181,31 @@ def api_action(rest: str, payload: Dict) -> Dict:
 # ─── Tool dispatcher (maps LLM tool names → REST calls) ──────────────────────
 
 def dispatch_tool(tool_name: str, args: Dict, rest: str,
-                  default_window: Optional[int]) -> Any:
+                  default_uid: Optional[str] = None,
+                  default_index: Optional[int] = None) -> Any:
     """
     Route a tool call from the LLM to the appropriate REST endpoint.
     Returns a Python object (will be JSON-serialised before sending back to LLM).
     """
-    wi = args.get("window_index", default_window)
+    uid: Optional[str]   = args.get("window_uid")
+    wi: Optional[int]    = args.get("window_index") if "window_index" in args else None
+    title: Optional[str] = args.get("window_title")
+    # Apply defaults only when the LLM specified none of uid / index / title.
+    if uid is None and wi is None and title is None:
+        uid = default_uid
+        wi  = default_index
 
     if tool_name == "list_windows":
         return api_list_windows(rest)
 
     elif tool_name == "observe_window":
-        return api_observe(rest, wi)
+        return api_observe(rest, uid, wi, title)
 
     elif tool_name == "get_element_tree":
-        return api_element_tree(rest, wi)
+        return api_element_tree(rest, uid, wi, title)
 
     elif tool_name == "get_screen_description":
-        mode = args.get("mode", "accessibility")
-        return api_description(rest, wi, mode)
+        return api_description(rest, uid, wi, title)
 
     elif tool_name == "get_screen_sketch":
         raw_ocr = args.get("ocr", False)
@@ -197,20 +213,20 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
             ocr = raw_ocr.strip().lower() not in ("", "false", "0", "no")
         else:
             ocr = bool(raw_ocr)
-        return api_sketch(rest, wi, args.get("grid_width"), args.get("grid_height"), ocr=ocr)
+        return api_sketch(rest, uid, wi, args.get("grid_width"), args.get("grid_height"), ocr=ocr, title=title)
 
     elif tool_name == "get_screenshot":
-        result = api_screenshot(rest, wi)
+        result = api_screenshot(rest, uid, wi, title)
         if "data" in result:
             result = {k: v for k, v in result.items() if k != "data"}
             result["note"] = (
                 "Screenshot captured (base64 data omitted from tool result). "
-                "Use get_screen_description with mode='ocr' or mode='vlm' for text content."
+                "Use get_screen_description for text content (OCR + VLM when available)."
             )
         return result
 
     elif tool_name == "get_full_screenshot":
-        result = api_full_screenshot(rest, wi, args.get("grid_width"), args.get("grid_height"))
+        result = api_full_screenshot(rest, uid, wi, args.get("grid_width"), args.get("grid_height"), title=title)
         if "data" in result:
             result = {k: v for k, v in result.items() if k != "data"}
             note = "Screenshot captured (base64 data omitted)."
@@ -220,14 +236,14 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         return result
 
     elif tool_name == "get_visible_areas":
-        if wi is None:
-            return {"error": "get_visible_areas requires a selected window (window_index)"}
-        return api_visible_areas(rest, wi)
+        if uid is None and wi is None and title is None:
+            return {"error": "get_visible_areas requires a selected window (window_uid, window_index, or window_title)"}
+        return api_visible_areas(rest, uid, wi, title)
 
     elif tool_name == "bring_to_foreground":
-        if wi is None:
-            return {"error": "bring_to_foreground requires a selected window (window_index)"}
-        return api_bring_to_foreground(rest, wi)
+        if uid is None and wi is None and title is None:
+            return {"error": "bring_to_foreground requires a selected window (window_uid, window_index, or window_title)"}
+        return api_bring_to_foreground(rest, uid, wi, title)
 
     elif tool_name == "click_at":
         payload = {
@@ -433,16 +449,18 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
 
 # ─── Tool definitions (OpenAI / OpenWebUI format) ─────────────────────────────
 
+# ─── Full tool catalogue (trimmed descriptions) ──────────────────────────────
+# Each entry is the schema sent to the LLM.  Tiers and keyword groups are in
+# _TOOL_TIER / _KEYWORD_GROUPS below — not in the dict itself so the JSON
+# payload stays clean.
+
 SCREEN_TOOLS: List[Dict] = [
+    # ── Core observation ─────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "list_windows",
-            "description": (
-                "Enumerate all visible top-level windows on the desktop. "
-                "Returns index, title, process name, PID, and pixel geometry. "
-                "Call this first to find the window_index needed by all other tools."
-            ),
+            "description": "List visible desktop windows. Returns index, title, process, PID, geometry, and window_uid. Prefer window_uid over index — index changes after every focus change.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -450,18 +468,11 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "observe_window",
-            "description": (
-                "Return the current visual state of a window as an ASCII sketch "
-                "plus a prose accessibility description. "
-                "Call before every action and after every action to verify the result."
-            ),
+            "description": "ASCII sketch + accessibility description of a window. Call before and after every action.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "window_index": {
-                        "type": "integer",
-                        "description": "Index from list_windows (0-based). Omit for focused window.",
-                    }
+                    "window_index": {"type": "integer", "description": "From list_windows. Omit for focused window."},
                 },
                 "required": [],
             },
@@ -471,20 +482,11 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_element_tree",
-            "description": (
-                "Return the full accessibility element tree as structured JSON. "
-                "Each element has id, name, role, value, enabled, focused, "
-                "keyboard_shortcut, and bounds {x, y, width, height} in absolute pixels. "
-                "To click the center of an element: x + width//2, y + height//2. "
-                "Use this when exact coordinates are needed."
-            ),
+            "description": "Accessibility tree as JSON. Each node has id, name, role, value, enabled, focused, bounds {x,y,width,height}.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "window_index": {
-                        "type": "integer",
-                        "description": "Index from list_windows. Omit for focused window.",
-                    }
+                    "window_index": {"type": "integer"},
                 },
                 "required": [],
             },
@@ -494,22 +496,12 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_screen_description",
-            "description": (
-                "Return a textual description of the window. "
-                "mode='accessibility': serialize element tree to prose (default, instant). "
-                "mode='ocr': extract visible text via Tesseract OCR on a screenshot. "
-                "mode='vlm': send screenshot to a vision model (requires server config). "
-                "mode='combined': all enabled modalities in one call."
-            ),
+            "description": "Describe a window using all available sources: accessibility tree, OCR, and VLM (when enabled). Returns everything available in one call.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "window_index": {"type": "integer"},
-                    "mode": {
-                        "type": "string",
-                        "enum": ["accessibility", "ocr", "vlm", "combined"],
-                        "description": "Analysis mode (default: accessibility).",
-                    },
+                    "window_uid":   {"type": "string"},
                 },
                 "required": [],
             },
@@ -519,19 +511,14 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_screen_sketch",
-            "description": (
-                "Render the accessibility element tree as an ASCII spatial layout diagram. "
-                "Useful for understanding spatial relationships between controls. "
-                "Set ocr=true to overlay Tesseract OCR text into blank grid cells for "
-                "higher-fidelity representation of on-screen text (requires Tesseract)."
-            ),
+            "description": "ASCII spatial layout of a window. ocr=true overlays Tesseract text.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "window_index": {"type": "integer"},
-                    "grid_width":   {"type": "integer", "description": "Output width in chars (default: 110)."},
-                    "grid_height":  {"type": "integer", "description": "Output height in chars (default: 38)."},
-                    "ocr":          {"type": "boolean", "description": "Enable OCR text overlay (default: false)."},
+                    "grid_width":   {"type": "integer"},
+                    "grid_height":  {"type": "integer"},
+                    "ocr":          {"type": "boolean"},
                 },
                 "required": [],
             },
@@ -541,92 +528,10 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_screenshot",
-            "description": (
-                "Capture a screenshot of a window. Returns format/encoding metadata; "
-                "the raw data is omitted from the tool result. "
-                "For text content prefer get_screen_description with mode='ocr'."
-            ),
+            "description": "Capture a window screenshot. Pixel data omitted; use get_screen_description mode=ocr for text.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "window_index": {"type": "integer"}
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "click_at",
-            "description": (
-                "Click at an absolute screen coordinate. "
-                "Derive coordinates from get_element_tree bounds: "
-                "click_x = x + width//2, click_y = y + height//2. "
-                "Always call observe_window after clicking."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "x":      {"type": "integer", "description": "Absolute screen X in pixels."},
-                    "y":      {"type": "integer", "description": "Absolute screen Y in pixels."},
-                    "button": {"type": "string",  "enum": ["left", "right", "middle"]},
-                    "double": {"type": "boolean", "description": "Double-click if true."},
-                },
-                "required": ["x", "y"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "type_text",
-            "description": (
-                "Type a string into the currently focused UI element. "
-                "Click the target input field first to ensure it has focus."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Text to type."}
-                },
-                "required": ["text"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "press_key",
-            "description": (
-                "Press a key or key combination. Modifiers come first joined with '+'. "
-                "Examples: 'enter', 'tab', 'escape', 'ctrl+s', 'ctrl+a', 'alt+f4'."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keys": {"type": "string", "description": "Key or combination."}
-                },
-                "required": ["keys"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "scroll",
-            "description": (
-                "Scroll the mouse wheel at a given screen position. "
-                "Positive clicks scroll up/forward; negative clicks scroll down/backward."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "clicks":       {"type": "integer", "description": "Scroll amount (positive = up, negative = down). Default: 3."},
-                    "x":            {"type": "integer", "description": "Screen X coordinate to scroll at (optional)."},
-                    "y":            {"type": "integer", "description": "Screen Y coordinate to scroll at (optional)."},
-                    "window_index": {"type": "integer"},
-                },
+                "properties": {"window_index": {"type": "integer"}},
                 "required": [],
             },
         },
@@ -635,18 +540,13 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_full_screenshot",
-            "description": (
-                "Capture the entire display (all monitors combined) as a screenshot, "
-                "and if a window_index is given also render its ASCII sketch with OCR overlay. "
-                "Screenshot pixel data is omitted from the tool result; the sketch is included. "
-                "Prefer this over separate get_screenshot + get_screen_sketch calls."
-            ),
+            "description": "Full-display screenshot + ASCII sketch with OCR for a window.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "window_index": {"type": "integer", "description": "Index from list_windows."},
-                    "grid_width":   {"type": "integer", "description": "Sketch width in chars (default: 110)."},
-                    "grid_height":  {"type": "integer", "description": "Sketch height in chars (default: 38)."},
+                    "window_index": {"type": "integer"},
+                    "grid_width":   {"type": "integer"},
+                    "grid_height":  {"type": "integer"},
                 },
                 "required": [],
             },
@@ -656,17 +556,71 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_visible_areas",
-            "description": (
-                "Return visible (non-occluded, on-screen) bounding boxes for a window. "
-                "Each region is {x, y, width, height} in absolute screen pixels. "
-                "Use this to check that a click target is actually reachable before acting."
-            ),
+            "description": "Non-occluded bounding boxes {x,y,width,height} for a window.",
+            "parameters": {
+                "type": "object",
+                "properties": {"window_index": {"type": "integer"}},
+                "required": ["window_index"],
+            },
+        },
+    },
+
+    # ── Core actions ─────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "click_at",
+            "description": "Click at absolute screen coordinates. Derive from get_element_tree: cx=x+w//2, cy=y+h//2.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "window_index": {"type": "integer", "description": "Index from list_windows."},
+                    "x":      {"type": "integer"},
+                    "y":      {"type": "integer"},
+                    "button": {"type": "string", "enum": ["left", "right", "middle"]},
+                    "double": {"type": "boolean"},
                 },
-                "required": ["window_index"],
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "type_text",
+            "description": "Type text into the focused element. Click the field first.",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "press_key",
+            "description": "Press a key or chord. Examples: enter, tab, escape, ctrl+s, alt+f4.",
+            "parameters": {
+                "type": "object",
+                "properties": {"keys": {"type": "string"}},
+                "required": ["keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scroll",
+            "description": "Scroll at (x,y). clicks>0 scrolls up, clicks<0 scrolls down.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "clicks":       {"type": "integer"},
+                    "x":            {"type": "integer"},
+                    "y":            {"type": "integer"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
             },
         },
     },
@@ -674,50 +628,21 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "bring_to_foreground",
-            "description": (
-                "Bring a window to the foreground by clicking inside its title bar.  "
-                "Avoids the left and right control-button margins where minimize / "
-                "maximize / close live, and prefers an explicit TitleBar element "
-                "when one is exposed by the accessibility tree."
-            ),
+            "description": "Raise a window to the foreground by clicking its title bar. Window indices change after this call — always call list_windows again before using any index.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "window_index": {"type": "integer", "description": "Index from list_windows."},
-                },
+                "properties": {"window_index": {"type": "integer"}},
                 "required": ["window_index"],
             },
         },
     },
 
-    # ── P1: discovery + element targeting ────────────────────────────────────
-    {
-        "type": "function",
-        "function": {
-            "name": "get_capabilities",
-            "description": "Report which features the server supports on this host.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_monitors",
-            "description": "Enumerate monitors with bounds + scale factor.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
+    # ── Element-targeted actions ──────────────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "find_element",
-            "description": (
-                "Resolve a selector to a concrete element_id and bounds.  "
-                "Selector grammar accepts XPath-ish "
-                '(Window/Pane/Button[name="OK"]) or CSS-ish '
-                "(Window > Pane Button[name=\"OK\"]).  ambiguous_matches > 1 "
-                "signals a brittle selector."
-            ),
+            "description": 'Resolve selector to element_id + bounds. XPath: Window/Pane/Button[name="OK"]. CSS: Window > Button.',
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -733,12 +658,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "click_element",
-            "description": (
-                "Click an element by selector or element_id.  Prefer this over "
-                "click_at because it self-recovers from layout shifts and "
-                "returns an ActionReceipt with before/after tree hashes, "
-                "changed flag, and new_dialogs."
-            ),
+            "description": "Click by selector or element_id. Returns ActionReceipt (changed, new_dialogs, before/after hashes).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -758,270 +678,8 @@ SCREEN_TOOLS: List[Dict] = [
     {
         "type": "function",
         "function": {
-            "name": "focus_element",
-            "description": "Give keyboard focus to an element identified by selector or element_id.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":   {"type": "string"},
-                    "element_id": {"type": "string"},
-                    "window_uid": {"type": "string"},
-                    "window_index": {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_value",
-            "description": (
-                "Set the textual value of an editable element (clicks it, "
-                "optionally clears, then types the value)."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                    "value":        {"type": "string"},
-                    "clear_first":  {"type": "boolean"},
-                },
-                "required": ["value"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "invoke_element",
-            "description": "Invoke an element's primary action (UIA InvokePattern preferred; falls back to click).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "select_option",
-            "description": "Open a combo-box / list and select an option by name or zero-based index.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                    "option_name":  {"type": "string"},
-                    "option_index": {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-
-    # ── P6: extra input verbs ────────────────────────────────────────────────
-    {
-        "type": "function",
-        "function": {
-            "name": "hover_at",
-            "description": "Move the mouse to (x, y) and pause hover_ms (default 250).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "x": {"type": "integer"}, "y": {"type": "integer"},
-                    "hover_ms": {"type": "integer"},
-                },
-                "required": ["x", "y"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "hover_element",
-            "description": "Move the mouse to an element's centre and pause hover_ms.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                    "hover_ms":     {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "right_click_element",
-            "description": "Right-click an element (synonym for click_element with button=right).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "double_click_element",
-            "description": "Double-click an element.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "key_into_element",
-            "description": "Click an element then press a key combination atomically.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                    "keys":         {"type": "string"},
-                },
-                "required": ["keys"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "clear_text",
-            "description": "Click an editable element and select-all + delete to clear it.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "selector":     {"type": "string"},
-                    "element_id":   {"type": "string"},
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "drag",
-            "description": (
-                "Drag from a starting point to an end point.  Each endpoint is "
-                "{x,y} or {selector} or {element_id}."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "from":      {"type": "object"},
-                    "to":        {"type": "object"},
-                    "modifiers": {"type": "array", "items": {"type": "string"}},
-                    "duration_s": {"type": "number"},
-                    "window_index": {"type": "integer"},
-                    "window_uid":   {"type": "string"},
-                },
-                "required": ["from", "to"],
-            },
-        },
-    },
-
-    # ── P2: synchronisation ────────────────────────────────────────────────
-    {
-        "type": "function",
-        "function": {
-            "name": "wait_for",
-            "description": (
-                "Block until any of the conditions matches or timeout.  "
-                "Conditions: element_appears, element_disappears, text_visible, "
-                "window_appears, window_disappears, tree_changes, focused_changes."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "any_of":     {"type": "array"},
-                    "window_uid": {"type": "string"},
-                    "timeout_ms": {"type": "integer"},
-                    "poll_ms":    {"type": "integer"},
-                },
-                "required": ["any_of"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "wait_idle",
-            "description": "Block until the tree hash is stable for quiet_ms.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                    "quiet_ms":     {"type": "integer"},
-                    "timeout_ms":   {"type": "integer"},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "observe_window_diff",
-            "description": (
-                "Like observe_window but returns only the diff against a previous "
-                "tree_token (passed as since=).  An expired or unknown token "
-                "returns the full tree."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "window_uid":   {"type": "string"},
-                    "window_index": {"type": "integer"},
-                    "since":        {"type": "string"},
-                    "format":       {"type": "string", "enum": ["custom", "json-patch"]},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "click_element_and_observe",
-            "description": "Click an element, wait briefly, then return the post-click observation/diff.",
+            "description": "Click element then return post-click observation diff.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1071,13 +729,259 @@ SCREEN_TOOLS: List[Dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "right_click_element",
+            "description": "Right-click an element by selector or element_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "double_click_element",
+            "description": "Double-click an element by selector or element_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "select_option",
+            "description": "Open a combo-box / list and select an option by name or zero-based index.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "option_name":  {"type": "string"},
+                    "option_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_value",
+            "description": "Click an editable element, optionally clear it, then type a value.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "value":        {"type": "string"},
+                    "clear_first":  {"type": "boolean"},
+                },
+                "required": ["value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "focus_element",
+            "description": "Give keyboard focus to an element.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "invoke_element",
+            "description": "Invoke an element's primary action (UIA InvokePattern or click fallback).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_text",
+            "description": "Click an editable element then select-all + delete.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "key_into_element",
+            "description": "Click an element then press a key combination atomically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "keys":         {"type": "string"},
+                },
+                "required": ["keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hover_at",
+            "description": "Move mouse to (x, y) and hold hover_ms ms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer"}, "y": {"type": "integer"},
+                    "hover_ms": {"type": "integer"},
+                },
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hover_element",
+            "description": "Move mouse to an element's centre and hold hover_ms ms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "hover_ms":     {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "drag",
+            "description": "Drag from one point/element to another. Each endpoint: {x,y} or {selector} or {element_id}.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from":        {"type": "object"},
+                    "to":          {"type": "object"},
+                    "modifiers":   {"type": "array", "items": {"type": "string"}},
+                    "duration_s":  {"type": "number"},
+                    "window_index": {"type": "integer"},
+                    "window_uid":   {"type": "string"},
+                },
+                "required": ["from", "to"],
+            },
+        },
+    },
 
-    # ── P2: snapshots ───────────────────────────────────────────────────────
+    # ── Synchronisation ───────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "wait_for",
+            "description": "Block until a condition matches or timeout. Conditions: element_appears, element_disappears, text_visible, window_appears, tree_changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "any_of":     {"type": "array"},
+                    "window_uid": {"type": "string"},
+                    "timeout_ms": {"type": "integer"},
+                    "poll_ms":    {"type": "integer"},
+                },
+                "required": ["any_of"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wait_idle",
+            "description": "Block until the accessibility tree is stable for quiet_ms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "quiet_ms":     {"type": "integer"},
+                    "timeout_ms":   {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "observe_window_diff",
+            "description": "observe_window but returns only the diff since a tree_token.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "since":        {"type": "string"},
+                    "format":       {"type": "string", "enum": ["custom", "json-patch"]},
+                },
+                "required": [],
+            },
+        },
+    },
+
+    # ── Snapshots ─────────────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "snapshot",
-            "description": "Capture the current state of all windows + trees.  Returns a snapshot_id.",
+            "description": "Capture all windows + trees. Returns snapshot_id.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1085,7 +989,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "snapshot_get",
-            "description": "Retrieve a snapshot by id.",
+            "description": "Retrieve a saved snapshot.",
             "parameters": {
                 "type": "object",
                 "properties": {"snapshot_id": {"type": "string"}},
@@ -1097,12 +1001,11 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "snapshot_diff",
-            "description": "Compare two snapshots (added/removed windows + per-window tree diff).",
+            "description": "Diff two snapshots (added/removed windows + per-window tree diff).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "a":      {"type": "string"},
-                    "b":      {"type": "string"},
+                    "a": {"type": "string"}, "b": {"type": "string"},
                     "format": {"type": "string", "enum": ["custom", "json-patch"]},
                 },
                 "required": ["a", "b"],
@@ -1122,12 +1025,12 @@ SCREEN_TOOLS: List[Dict] = [
         },
     },
 
-    # ── P4: harness ─────────────────────────────────────────────────────────
+    # ── Tracing / replay ──────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "trace_start",
-            "description": "Start recording every tool call into a JSONL trace file.",
+            "description": "Start recording tool calls to a JSONL trace file.",
             "parameters": {
                 "type": "object",
                 "properties": {"label": {"type": "string"}},
@@ -1155,7 +1058,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "replay_start",
-            "description": "Load a trace and prepare to replay it (execute or verify).",
+            "description": "Load a trace for replay (execute or verify mode).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1183,7 +1086,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "replay_status",
-            "description": "Report replay position, total, finished, and divergences.",
+            "description": "Report replay position, total, finished, divergences.",
             "parameters": {
                 "type": "object",
                 "properties": {"replay_id": {"type": "string"}},
@@ -1203,6 +1106,8 @@ SCREEN_TOOLS: List[Dict] = [
             },
         },
     },
+
+    # ── Testing / harness ─────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
@@ -1219,12 +1124,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "assert_state",
-            "description": (
-                "Evaluate a list of declarative predicates against the current "
-                "state.  Predicates: element_exists, element_absent, value_equals, "
-                "value_matches, text_visible, window_focused, window_exists, "
-                "tree_hash_equals, screenshot_similar.  Returns all_passed."
-            ),
+            "description": "Evaluate predicates against current state. Returns all_passed. Predicates: element_exists, value_equals, text_visible, window_focused, screenshot_similar, …",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1236,12 +1136,12 @@ SCREEN_TOOLS: List[Dict] = [
         },
     },
 
-    # ── P5: safety ──────────────────────────────────────────────────────────
+    # ── Safety / budget ───────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "get_budget_status",
-            "description": "Report remaining budget (actions, screenshots, vlm_tokens, …).",
+            "description": "Remaining budget: actions, screenshots, vlm_tokens, …",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1249,7 +1149,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_redaction_status",
-            "description": "Report redaction enabled state and applied count.",
+            "description": "Redaction enabled state and applied count.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -1257,11 +1157,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "propose_action",
-            "description": (
-                "Issue a single-use confirm_token bound to (window_uid, selector, "
-                "bbox) for a destructive action.  Call the action with the "
-                "returned confirm_token to proceed."
-            ),
+            "description": "Issue a confirm_token for a destructive action. Pass the token back to the action to proceed.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1273,12 +1169,30 @@ SCREEN_TOOLS: List[Dict] = [
         },
     },
 
-    # ── P3 extras ───────────────────────────────────────────────────────────
+    # ── Discovery ─────────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "get_capabilities",
+            "description": "Features the server supports on this host.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_monitors",
+            "description": "Monitors with bounds and scale factor.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+
+    # ── OCR extras ────────────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "get_screenshot_cropped",
-            "description": "Cropped screenshot (element_id or bbox) with optional max_width downscale.",
+            "description": "Cropped screenshot around an element or bbox, with optional max_width downscale.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1296,7 +1210,7 @@ SCREEN_TOOLS: List[Dict] = [
         "type": "function",
         "function": {
             "name": "get_ocr",
-            "description": "Region-scoped OCR returning [{text, confidence, bbox}].",
+            "description": "Region-scoped OCR. Returns [{text, confidence, bbox}].",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1309,16 +1223,12 @@ SCREEN_TOOLS: List[Dict] = [
         },
     },
 
-    # ── Catch-all: drive any registered server tool by name ────────────────
+    # ── Escape hatch ──────────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
             "name": "call_tool",
-            "description": (
-                "Call any tool registered on the OS Screen Observer server by name.  "
-                "Use this for tools not covered by a dedicated wrapper above; "
-                "the JSON args body is forwarded as-is."
-            ),
+            "description": "Call any server tool by name with arbitrary JSON args.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1331,33 +1241,223 @@ SCREEN_TOOLS: List[Dict] = [
     },
 ]
 
+# ─── Tool index, tiers, and keyword groups ────────────────────────────────────
+
+_TOOL_BY_NAME: Dict[str, Dict] = {
+    t["function"]["name"]: t for t in SCREEN_TOOLS
+}
+
+# "always"   — sent every turn regardless of task
+# "usually"  — sent by default (covers the vast majority of tasks)
+# "on_demand"— omitted unless the task keywords or request_tools activates them
+_TOOL_TIER: Dict[str, str] = {
+    # always
+    "list_windows":              "always",
+    "observe_window":            "always",
+    "get_element_tree":          "always",
+    "find_element":              "always",
+    "click_element":             "always",
+    "type_text":                 "always",
+    "press_key":                 "always",
+    "scroll":                    "always",
+    "click_element_and_observe": "always",
+    # usually
+    "bring_to_foreground":       "usually",
+    "right_click_element":       "usually",
+    "double_click_element":      "usually",
+    "select_option":             "usually",
+    "set_value":                 "usually",
+    "wait_idle":                 "usually",
+    "type_and_observe":          "usually",
+    "press_key_and_observe":     "usually",
+    "get_screen_description":    "usually",
+    # on_demand (everything else)
+    "get_screen_sketch":         "on_demand",
+    "get_screenshot":            "on_demand",
+    "get_full_screenshot":       "on_demand",
+    "get_visible_areas":         "on_demand",
+    "get_screenshot_cropped":    "on_demand",
+    "get_ocr":                   "on_demand",
+    "hover_at":                  "on_demand",
+    "hover_element":             "on_demand",
+    "drag":                      "on_demand",
+    "key_into_element":          "on_demand",
+    "clear_text":                "on_demand",
+    "focus_element":             "on_demand",
+    "invoke_element":            "on_demand",
+    "click_at":                  "on_demand",
+    "wait_for":                  "on_demand",
+    "observe_window_diff":       "on_demand",
+    "snapshot":                  "on_demand",
+    "snapshot_get":              "on_demand",
+    "snapshot_diff":             "on_demand",
+    "snapshot_drop":             "on_demand",
+    "trace_start":               "on_demand",
+    "trace_stop":                "on_demand",
+    "trace_status":              "on_demand",
+    "replay_start":              "on_demand",
+    "replay_step":               "on_demand",
+    "replay_status":             "on_demand",
+    "replay_stop":               "on_demand",
+    "load_scenario":             "on_demand",
+    "assert_state":              "on_demand",
+    "get_budget_status":         "on_demand",
+    "get_redaction_status":      "on_demand",
+    "propose_action":            "on_demand",
+    "get_capabilities":          "on_demand",
+    "get_monitors":              "on_demand",
+    "call_tool":                 "on_demand",
+}
+
+# Task keywords that unlock specific on_demand tools without a request_tools call.
+_KEYWORD_GROUPS: Dict[str, List[str]] = {
+    "drag":          ["drag"],
+    "drop":          ["drag"],
+    "move":          ["drag"],
+    "hover":         ["hover_at", "hover_element"],
+    "tooltip":       ["hover_at", "hover_element"],
+    "screenshot":    ["get_full_screenshot", "get_screenshot"],
+    "capture":       ["get_full_screenshot"],
+    "sketch":        ["get_screen_sketch"],
+    "ocr":           ["get_ocr", "get_screen_description"],
+    "read text":     ["get_ocr"],
+    "cropped":       ["get_screenshot_cropped"],
+    "visible area":  ["get_visible_areas"],
+    "occluded":      ["get_visible_areas"],
+    "snapshot":      ["snapshot", "snapshot_get", "snapshot_diff", "snapshot_drop"],
+    "compare":       ["snapshot", "snapshot_diff"],
+    "diff":          ["observe_window_diff", "snapshot_diff"],
+    "wait for":      ["wait_for"],
+    "appear":        ["wait_for"],
+    "loading":       ["wait_for"],
+    "coordinates":   ["click_at"],
+    "pixel":         ["click_at"],
+    "clear":         ["clear_text"],
+    "erase":         ["clear_text"],
+    "focus":         ["focus_element"],
+    "invoke":        ["invoke_element"],
+    "trace":         ["trace_start", "trace_stop", "trace_status"],
+    "record":        ["trace_start", "trace_stop", "trace_status"],
+    "replay":        ["replay_start", "replay_step", "replay_status", "replay_stop"],
+    "playback":      ["replay_start", "replay_step", "replay_status", "replay_stop"],
+    "assert":        ["assert_state"],
+    "verify state":  ["assert_state"],
+    "budget":        ["get_budget_status"],
+    "redact":        ["get_redaction_status"],
+    "capabilities":  ["get_capabilities"],
+    "monitors":      ["get_monitors"],
+}
+
+# Meta-tools always included — handled locally in the agent loop, never sent to REST.
+_META_TOOLS: List[Dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_available_tools",
+            "description": (
+                "List tools not yet active in this session, with one-line descriptions. "
+                "Call request_tools with the names you need to activate them."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "request_tools",
+            "description": (
+                "Activate additional tools by name for the rest of this session. "
+                "Use list_available_tools first to see what is available."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tool names to activate.",
+                    }
+                },
+                "required": ["names"],
+            },
+        },
+    },
+]
+
+
+def _initial_active_tools(task: str) -> set:
+    """Return the set of tool names to send on turn 1 based on tier + keywords."""
+    active = {name for name, tier in _TOOL_TIER.items() if tier in ("always", "usually")}
+    task_lower = task.lower()
+    for kw, names in _KEYWORD_GROUPS.items():
+        if kw in task_lower:
+            active.update(names)
+    return active
+
+
+def _tool_defs_for(active: set) -> List[Dict]:
+    """Build the tools list to send to the LLM from the active name set."""
+    defs = [_TOOL_BY_NAME[n] for n in active if n in _TOOL_BY_NAME]
+    return defs + _META_TOOLS
+
+
 SYSTEM_PROMPT = """\
 You are a GUI automation agent operating on a live desktop.
 You observe screen state through accessibility tools and execute mouse and keyboard actions.
 
 COORDINATE RULE
 All x, y values must come from get_element_tree bounds — never estimate or recall coordinates.
-To click the centre of element with bounds {x, y, width, height}:
+To click the centre of an element with bounds {x, y, width, height}:
   click_x = x + width  // 2
   click_y = y + height // 2
 
 OBSERVATION RULE
-You are blind to the screen unless you call observe_window.
-Call observe_window:
-  - before deciding where to click or type
-  - after every action, without exception, to confirm the result
+You are blind to the screen unless you call observe_window or get_screen_description.
+Call observe_window before deciding where to act, and after every action to confirm the result.
+Always read the window title from the observe_window result and confirm it matches the window
+you intend to act on before proceeding.
+
+FINDING ELEMENTS — IMPORTANT
+The accessibility tree may be incomplete for web pages and some applications.
+If a selector or element search fails with NOT FOUND:
+  1. Call get_screen_description to get accessibility + OCR + visual text all at once.
+  2. Use get_screenshot and inspect the image to identify element positions visually.
+  3. Fall back to click_at with coordinates derived from element bounds in the sketch/screenshot.
+Do not give up after one NOT FOUND — always try the screenshot/OCR path before reporting failure.
+
+WINDOW INDEX INSTABILITY — CRITICAL
+window_index values change every time a window is raised, minimised, or closed.
+• Every window tool call returns window_uid in its response — capture it immediately and use it
+  on all subsequent calls for that window instead of window_index.
+• When you must call by window_index, the server auto-resolves it to the uid and returns
+  window_uid in the result — read that value and switch to uid= from that point on.
+• Never assume the same index still refers to the same window between tool calls.
+
+BROWSER TAB SWITCHING
+Browser tab bars appear as TabItem elements in the accessibility tree.
+To switch to a different tab: observe_window, then click_element on the correct TabItem.
+The window title updates to reflect the active tab after the click.
+
+TASK COMPLETION
+Complete every part of the user's task before stopping.
+Do not ask for clarification or next steps mid-task when the task is unambiguous.
+Only report done when all sub-tasks are finished.
 
 WORKFLOW
-1. list_windows — identify the target window_index
-2. bring_to_foreground — if the window may be behind others, raise it first
-3. observe_window — understand current state
-4. get_element_tree — get exact coordinates when needed
-5. Execute exactly one action (click_at / type_text / press_key)
-6. observe_window — verify the change
-7. Repeat until the task is complete
+1. list_windows — note window_uid for the target window; use uid on all future calls
+2. bring_to_foreground(window_uid=…) — raise the window (result includes window_uid if you used index)
+3. observe_window(window_uid=…) — verify window title matches; understand current state
+4. get_element_tree(window_uid=…) — get exact coordinates when needed
+5. Execute one action
+6. observe_window — verify title still matches and the change occurred
+7. Repeat until ALL sub-tasks are complete
 
-If an action does not produce the expected result, do not repeat it;
-re-observe and try an alternative approach.
+TOOL AVAILABILITY
+Only a subset of tools is active at session start to keep context short.
+  • list_available_tools() — see what else exists
+  • request_tools(names=[…]) — activate specific tools for this session
+
+If an action does not produce the expected result, re-observe and try an alternative approach.
 """
 
 # OpenWebUI OpenAI-compatible API prefix (centralised so both endpoints stay in sync)
@@ -1382,18 +1482,21 @@ class LLMClient:
         headers = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        return _post(self.base_url, f"{_OWU_PREFIX}/chat/completions", payload, headers, timeout=120)
+        return _post(self.base_url, f"{_OWU_PREFIX}/chat/completions", payload, headers, timeout=240)
 
 # ─── Agentic loop ─────────────────────────────────────────────────────────────
 
 MAX_TURNS = 30
+_LLM_MAX_RETRIES = 3        # retries for transient network errors per turn
+_LLM_RETRY_DELAY = 5.0      # seconds before first retry (doubles each attempt)
 
 def run_agent(
     llm:            LLMClient,
     rest:           str,
     user_task:      str,
-    window_index:   Optional[int],
+    default_uid:    Optional[str],
     history:        List[Dict],
+    default_index:  Optional[int] = None,
 ) -> List[Dict]:
     """
     Run the agentic tool-calling loop.
@@ -1405,16 +1508,48 @@ def run_agent(
     print()
     print(_c(f"  User: {user_task}", "cyan"))
 
+    active_tools: set = _initial_active_tools(user_task)
+    n_keyword = len(active_tools) - sum(
+        1 for t, tier in _TOOL_TIER.items() if tier in ("always", "usually")
+    )
+    print(_c(
+        f"  [Tools: {len(active_tools)} active"
+        + (f" (+{n_keyword} from keywords)" if n_keyword > 0 else "")
+        + f" / {len(SCREEN_TOOLS)} total]",
+        "dim",
+    ))
+
     for turn in range(MAX_TURNS):
-        try:
-            resp = llm.chat(history, tools=SCREEN_TOOLS)
-        except urllib.error.URLError as e:
-            print(_c(f"\n  [LLM request failed: {e}]", "red"))
-            break
-        except Exception as e:
-            print(_c(f"\n  [LLM error: {e}]", "red"))
-            traceback.print_exc()
-            break
+        tool_defs = _tool_defs_for(active_tools)
+        resp = None
+        for attempt in range(_LLM_MAX_RETRIES + 1):
+            try:
+                resp = llm.chat(history, tools=tool_defs)
+                break
+            except (TimeoutError, ConnectionError, OSError) as e:
+                if attempt < _LLM_MAX_RETRIES:
+                    delay = _LLM_RETRY_DELAY * (2 ** attempt)
+                    print(_c(f"\n  [LLM timeout/connection error — retrying in {delay:.0f}s: {e}]", "yellow"))
+                    time.sleep(delay)
+                else:
+                    print(_c(f"\n  [LLM request failed after {_LLM_MAX_RETRIES + 1} attempts: {e}]", "red"))
+                    return history
+            except urllib.error.URLError as e:
+                # URLError wraps OSError/TimeoutError — retry those too.
+                cause = e.reason if hasattr(e, "reason") else e
+                if isinstance(cause, (TimeoutError, ConnectionError, OSError)) and attempt < _LLM_MAX_RETRIES:
+                    delay = _LLM_RETRY_DELAY * (2 ** attempt)
+                    print(_c(f"\n  [LLM network error — retrying in {delay:.0f}s: {e}]", "yellow"))
+                    time.sleep(delay)
+                else:
+                    print(_c(f"\n  [LLM request failed: {e}]", "red"))
+                    return history
+            except Exception as e:
+                print(_c(f"\n  [LLM error: {e}]", "red"))
+                traceback.print_exc()
+                return history
+        if resp is None:
+            return history
 
         choices = resp.get("choices", [])
         if not choices:
@@ -1460,11 +1595,40 @@ def run_agent(
             print()
             print(_c(f"  → {fn_name}({arg_str})", "yellow", "bold"))
 
-            # Dispatch to REST
-            try:
-                result = dispatch_tool(fn_name, fn_args, rest, window_index)
-            except Exception as e:
-                result = {"error": str(e)}
+            # Handle meta-tools locally; dispatch everything else to REST.
+            if fn_name == "list_available_tools":
+                inactive = [
+                    {"name": n, "description": _TOOL_BY_NAME[n]["function"]["description"]}
+                    for n in _TOOL_BY_NAME
+                    if n not in active_tools
+                ]
+                result = {"available": inactive, "count": len(inactive)}
+            elif fn_name == "request_tools":
+                requested = fn_args.get("names", [])
+                added, unknown = [], []
+                for name in requested:
+                    if name in _TOOL_BY_NAME and name not in active_tools:
+                        active_tools.add(name)
+                        added.append(name)
+                    elif name not in _TOOL_BY_NAME:
+                        unknown.append(name)
+                result = {
+                    "ok": True,
+                    "added": added,
+                    "unknown": unknown,
+                    "note": (
+                        f"Activated {len(added)} tool(s). "
+                        "They are available in your tool list from the next turn."
+                        + (f" Unknown: {unknown}" if unknown else "")
+                    ),
+                }
+                if added:
+                    print(_c(f"    ↳ activated: {', '.join(added)}", "dim"))
+            else:
+                try:
+                    result = dispatch_tool(fn_name, fn_args, rest, default_uid, default_index)
+                except Exception as e:
+                    result = {"error": str(e)}
 
             # Print a short summary of the result
             _print_tool_result(fn_name, result)
@@ -1496,7 +1660,8 @@ def _print_tool_result(tool_name: str, result: Any) -> None:
             print(_c(f"    ← {len(windows)} window(s):", "dim"))
             for w in windows[:8]:
                 flag = " [FOCUSED]" if w.get("focused") else ""
-                print(_c(f"      [{w['index']}] {w['title']}{flag}", "dim"))
+                uid  = f"  uid={w['window_uid']}" if w.get("window_uid") else ""
+                print(_c(f"      [{w['index']}] {w['title']}{flag}{uid}", "dim"))
             if len(windows) > 8:
                 print(_c(f"      … and {len(windows) - 8} more", "dim"))
 
@@ -1532,10 +1697,9 @@ def _print_tool_result(tool_name: str, result: Any) -> None:
             print(_c(f"    ← {count} elements in '{window}'", "dim"))
 
         elif tool_name == "get_screen_description":
-            mode = result.get("mode", "")
             desc = result.get("description", "")
             preview = (desc[:120] + "…") if len(desc) > 120 else desc
-            print(_c(f"    ← [{mode}] {preview}", "dim"))
+            print(_c(f"    ← {preview}", "dim"))
 
         else:
             # Generic: print first 200 chars of JSON
@@ -1701,6 +1865,7 @@ def main() -> None:
     # ── 3. Main window-selection loop ─────────────────────────────────────────
     conversation: List[Dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     selected_window: Optional[int] = None
+    selected_uid: Optional[str] = None
 
     print()
     print(_c("  Commands:  <number> select window   r refresh   q quit", "dim"))
@@ -1745,12 +1910,14 @@ def main() -> None:
             continue
 
         selected_window = chosen
-        win_title = next((w["title"] for w in windows if w["index"] == chosen), str(chosen))
+        chosen_win = next((w for w in windows if w["index"] == chosen), None)
+        win_title   = chosen_win["title"] if chosen_win else str(chosen)
+        selected_uid = chosen_win.get("window_uid") if chosen_win else None
 
         # ── 4. Window inspection sub-loop ────────────────────────────────────
         print(_c(f"\n  Loading window [{chosen}] {win_title} …", "dim"))
         try:
-            view = api_observe(rest, selected_window)
+            view = api_observe(rest, selected_uid, selected_window)
         except Exception as e:
             print(_c(f"  [Failed to observe window: {e}]", "red"))
             continue
@@ -1773,7 +1940,7 @@ def main() -> None:
 
             if raw2.lower() in ("v", "view"):
                 try:
-                    view = api_observe(rest, selected_window)
+                    view = api_observe(rest, selected_uid, selected_window)
                 except Exception as e:
                     print(_c(f"  [Failed: {e}]", "red"))
                     continue
@@ -1782,7 +1949,7 @@ def main() -> None:
 
             if raw2.lower() in ("r", "refresh"):
                 try:
-                    view = api_observe(rest, selected_window)
+                    view = api_observe(rest, selected_uid, selected_window)
                 except Exception as e:
                     print(_c(f"  [Failed: {e}]", "red"))
                     continue
@@ -1791,9 +1958,11 @@ def main() -> None:
 
             # Treat anything else as a task for the LLM agent
             print()
-            print(_c(f"  ── Running agent for task on window [{selected_window}] ──────────",
+            win_label = selected_uid or str(selected_window)
+            print(_c(f"  ── Running agent for task on window [{win_label}] ──────────",
                      "magenta", "bold"))
-            conversation = run_agent(llm, rest, raw2, selected_window, conversation)
+            conversation = run_agent(llm, rest, raw2, selected_uid, conversation,
+                                     default_index=selected_window)
             print()
             print(_c("  ── Agent finished ───────────────────────────────────────────",
                      "magenta"))

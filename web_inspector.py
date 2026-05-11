@@ -6,7 +6,7 @@ Exposes a Flask HTTP server on localhost:5001 (configurable) with:
   GET  /                   — Single-page inspection UI
   GET  /api/windows        — List windows
   GET  /api/structure      — Accessibility tree JSON
-  GET  /api/description    — Textual description (mode param)
+  GET  /api/description    — Textual description (combined: accessibility + OCR + VLM)
   GET  /api/sketch         — ASCII layout sketch
   GET  /api/screenshot     — Screenshot as base64 PNG
   POST /api/action         — Execute an input action
@@ -142,13 +142,16 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 .tab-btn.active { color: var(--cyan); border-color: var(--cyan); }
 .tab-spacer { flex: 1; }
 
-/* Mode selector (description tab) */
-#mode-wrap { display: none; align-items: center; gap: 6px; padding-right: 4px; }
-#mode-wrap.visible { display: flex; }
-#mode-select {
-  background: var(--panel); border: 1px solid var(--border2); color: var(--text);
-  font-family: var(--mono); font-size: 10px; padding: 3px 6px;
+/* Description: source-availability badges */
+.desc-sources { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.src-badge {
+  font-family: var(--mono); font-size: 10px; padding: 3px 10px;
+  border-radius: 2px; border: 1px solid; white-space: pre-wrap; max-width: 100%;
 }
+.src-ok   { color: var(--green); border-color: var(--green); }
+.src-warn { color: var(--amber); border-color: var(--amber); }
+.src-off  { color: var(--text-dim); border-color: var(--border2); }
+
 #fetch-btn {
   background: none; border: 1px solid var(--cyan); color: var(--cyan);
   font-family: var(--mono); font-size: 10px; padding: 3px 10px;
@@ -271,15 +274,7 @@ details > summary::-webkit-details-marker { display: none; }
       <button class="tab-btn" data-tab="screenshot">SCREENSHOT</button>
       <button class="tab-btn" data-tab="actions">ACTIONS</button>
       <span class="tab-spacer"></span>
-      <div id="mode-wrap">
-        <select id="mode-select">
-          <option value="accessibility">accessibility</option>
-          <option value="ocr">ocr</option>
-          <option value="vlm">vlm</option>
-          <option value="combined">combined</option>
-        </select>
-        <button id="fetch-btn" onclick="loadDescription()">FETCH</button>
-      </div>
+      <button id="fetch-btn" onclick="loadDescription()">FETCH</button>
     </div>
 
     <div id="tab-content">
@@ -548,7 +543,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.classList.add('active');
     activeTab = btn.dataset.tab;
     document.getElementById('panel-' + activeTab).classList.add('active');
-    document.getElementById('mode-wrap').classList.toggle('visible', activeTab === 'description');
     if (selectedIndex !== null && activeTab !== 'actions') loadTab(activeTab);
   });
 });
@@ -636,26 +630,67 @@ async function loadStructure() {
   } catch(e) { panel.innerHTML = `<pre style="color:var(--red)">${esc(String(e))}</pre>`; setStatus('ERROR'); }
 }
 
+// Parse "[label]\ntext" blocks from a combined description string.
+function parseDescSections(desc) {
+  const sections = [];
+  const re = /^\[([^\]]+)\]\n/gm;
+  let last = 0, lastLabel = null, m;
+  while ((m = re.exec(desc)) !== null) {
+    if (lastLabel !== null) sections.push([lastLabel, desc.slice(last, m.index).trim()]);
+    lastLabel = m[1];
+    last = m.index + m[0].length;
+  }
+  if (lastLabel !== null) sections.push([lastLabel, desc.slice(last).trim()]);
+  if (sections.length === 0 && desc.trim()) sections.push(['description', desc.trim()]);
+  return sections;
+}
+
+// Build a source-availability header from /api/capabilities and the sections that ran.
+function buildSourcesHdr(caps, sections) {
+  const found = new Set(sections.map(([l]) => l.toLowerCase()));
+  const sup = (caps && caps.supports) || {};
+  const defs = [
+    { key: 'accessibility', label: 'Accessibility tree',
+      ok: sup.accessibility_tree !== false,
+      howto: null },
+    { key: 'ocr', label: 'OCR (Tesseract)',
+      ok: !!sup.ocr,
+      howto: 'Install Tesseract binary, pip install pytesseract, set ocr.enabled=true in config.json' },
+    { key: 'vlm', label: 'VLM (Claude Vision)',
+      ok: !!sup.vlm,
+      howto: 'Set ANTHROPIC_API_KEY and vlm.enabled=true in config.json' },
+  ];
+  let html = '<div class="desc-sources">';
+  for (const d of defs) {
+    const ran = found.has(d.key);
+    const cls  = ran ? 'src-ok' : (d.ok ? 'src-warn' : 'src-off');
+    const sym  = ran ? '✓' : '✗';
+    const tip  = ran ? '' : (d.howto ? `\n→ ${d.howto}` : ' (unavailable)');
+    html += `<span class="src-badge ${cls}">${sym} ${esc(d.label)}${esc(tip)}</span>`;
+  }
+  html += '</div>';
+  return html;
+}
+
 async function loadDescription() {
   const panel = document.getElementById('panel-description');
-  const mode  = document.getElementById('mode-select').value;
   panel.innerHTML = spinner();
   setStatus('FETCHING DESCRIPTION…');
   try {
-    const idx = selectedIndex !== null ? `&window_index=${selectedIndex}` : '';
-    const data = await apiFetch(`/api/description?mode=${mode}${idx}`);
-    if (data.error) { panel.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; return; }
-
-    let html = '';
-    const modes = ['accessibility', 'ocr', 'vlm'];
-    if (data.description !== undefined) {
-      html = `<div class="desc-section"><div class="desc-label">${esc(mode)}</div><pre>${esc(data.description)}</pre></div>`;
-    } else {
-      for (const m of modes) {
-        if (data[m] !== undefined) {
-          html += `<div class="desc-section"><div class="desc-label">${m}</div><pre>${esc(data[m])}</pre></div>`;
-        }
-      }
+    const idx = selectedIndex !== null ? `?window_index=${selectedIndex}` : '';
+    const [data, caps] = await Promise.all([
+      apiFetch(`/api/description${idx}`),
+      apiFetch('/api/capabilities'),
+    ]);
+    if (!data.ok) {
+      const msg = data.error ? JSON.stringify(data.error, null, 2) : JSON.stringify(data);
+      panel.innerHTML = `<pre style="color:var(--red)">${esc(msg)}</pre>`;
+      return;
+    }
+    const sections = parseDescSections(data.description || '');
+    let html = buildSourcesHdr(caps, sections);
+    for (const [label, text] of sections) {
+      html += `<div class="desc-section"><div class="desc-label">${esc(label)}</div><pre>${esc(text)}</pre></div>`;
     }
     panel.innerHTML = html || '<pre>No description returned.</pre>';
     setStatus('READY');
@@ -1131,12 +1166,19 @@ def create_web_app(
     # ── API helpers ───────────────────────────────────────────────────────────
 
     def _window_from_args():
-        """Resolve window_index query param → (WindowInfo | None, hwnd | None)."""
-        windows  = observer.list_windows()
-        raw      = request.args.get("window_index")
-        idx      = int(raw) if raw is not None else None
-        info     = observer.window_by_index(windows, idx)
-        hwnd     = info.handle if info else None
+        """Resolve window_uid, window_index, or window_title → (WindowInfo, hwnd, windows).
+
+        Priority: window_uid > window_index > window_title (substring match).
+        """
+        windows = observer.list_windows()
+        res = observer.resolve_window(
+            windows,
+            window_uid=request.args.get("window_uid"),
+            window_index=int(request.args["window_index"]) if "window_index" in request.args else None,
+            window_title=request.args.get("window_title"),
+        )
+        info = res.info
+        hwnd = info.handle if info else None
         return info, hwnd, windows
 
     # ── /api/windows ──────────────────────────────────────────────────────────
@@ -1321,7 +1363,7 @@ def create_web_app(
         try:
             info, hwnd, windows = _window_from_args()
             if hwnd is None:
-                return jsonify({"error": "window_index is required"}), 400
+                return jsonify({"error": "window_uid or window_index is required"}), 400
             areas = observer.get_visible_areas(hwnd, windows)
             return jsonify({
                 "window":          info.title if info else "(unknown)",
@@ -1341,9 +1383,10 @@ def create_web_app(
             info, hwnd, windows = _window_from_args()
             if hwnd is None:
                 return jsonify({"success": False,
-                                "error": "window_index is required"}), 400
+                                "error": "window_uid or window_index is required"}), 400
             result = observer.bring_to_foreground(hwnd, windows)
-            result["window"] = info.title if info else "(unknown)"
+            result["window"]     = info.title if info else "(unknown)"
+            result["window_uid"] = info.window_uid if info else None
             return jsonify(result)
         except Exception as e:
             print(f"[web_inspector:/api/bring_to_foreground] {e}")

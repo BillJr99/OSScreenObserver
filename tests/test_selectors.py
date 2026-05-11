@@ -108,3 +108,21 @@ def test_selector_for_index_fallback():
 def test_wildcard_role():
     r = sel.find(_tree(), "Window/*")
     assert len(r.matches) == 4
+
+
+def test_backslash_escaped_quotes_css():
+    """LLMs often JSON-escape quotes, producing TabItem \\"name\\" instead of TabItem "name"."""
+    r = sel.find(_tree(), r'Button \"Login\"')
+    assert len(r.matches) == 1
+    assert r.matches[0].element_id == "r.2"
+
+
+def test_backslash_escaped_quotes_with_spaces():
+    """Name with internal spaces and backslash-escaped delimiters."""
+    tree = UIElement("r", "Inbox App", "Window", bounds=Bounds(0, 0, 1920, 1080))
+    tab = UIElement("r.0", "Inbox - user@example.com - Gmail - Memory usage - 724 MB",
+                    "TabItem", bounds=Bounds(0, 0, 400, 30))
+    tree.children = [tab]
+    r = sel.find(tree, r'TabItem \"Inbox - user@example.com - Gmail - Memory usage - 724 MB\"')
+    assert len(r.matches) == 1
+    assert r.matches[0].element_id == "r.0"

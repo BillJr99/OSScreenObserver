@@ -44,7 +44,7 @@ Both interfaces share the same underlying observer and can run simultaneously.
 python -m venv .venv
 # Windows:
 .venv\Scripts\activate
-# macOS/Linux:
+# macOS/Linux/WSL:
 source .venv/bin/activate
 
 pip install -r requirements.txt
@@ -52,54 +52,61 @@ pip install -r requirements.txt
 
 ### 2. Platform-specific setup
 
-**Windows (full UIA support)**
+**Windows (primary — full UIA support)**
 ```bash
 pip install pywinauto pywin32 psutil
 ```
 
-**macOS (screenshot only; AX tree is stub)**
+**macOS**
 ```bash
-# mss and pyautogui handle screenshot and actions.
-# Full AX tree support requires pyobjc (contributions welcome).
-pip install pyobjc  # optional
+# mss and pyautogui handle screenshots and actions.
+pip install pyobjc          # enables full AX accessibility tree
 ```
 
-**Linux (screenshot only; AT-SPI tree is stub)**
+**Linux**
 ```bash
-sudo apt install wmctrl  # for window enumeration
-# Full AT-SPI tree support requires pyatspi (contributions welcome).
-pip install pyatspi  # optional
+sudo apt install wmctrl     # window enumeration
+pip install pyatspi         # enables full AT-SPI accessibility tree (optional)
 ```
 
-**OCR (optional, all platforms)**
+**WSL (Windows Subsystem for Linux)**
+
+The server auto-detects WSL and uses PowerShell for screenshots and window
+listing when no X11 display is available. Set `DISPLAY` for X11 forwarding to
+also enable accessibility tools.
+
+### 3. Description sources (optional, all platforms)
+
+`get_screen_description` always runs in *combined* mode and returns every
+source that is available. The web inspector's Description tab shows which
+sources ran and how to enable any that are missing.
+
+**OCR (Tesseract)**
 ```bash
-# Install Tesseract:
-#   Windows: https://github.com/tesseract-ocr/tesseract/releases
-#   macOS:   brew install tesseract
-#   Linux:   sudo apt install tesseract-ocr
+# Windows:  download from https://github.com/tesseract-ocr/tesseract/releases
+# macOS:    brew install tesseract
+# Linux:    sudo apt install tesseract-ocr
 
 pip install pytesseract
 ```
 
-On **Windows** the Tesseract installer does not add the binary to `PATH`, so
-you must also point the server at it in `config.json`:
+On **Windows** the Tesseract installer does not add the binary to `PATH`.
+Point the server at it in `config.json`:
 
 ```jsonc
 {
   "ocr": {
     "enabled": true,
-    // Backslashes inside JSON strings must be escaped, OR use forward slashes:
-    "tesseract_cmd": "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
-    // equivalent: "c:/Program Files/Tesseract-OCR/tesseract.exe"
+    // forward slashes work on Windows too:
+    "tesseract_cmd": "C:/Program Files/Tesseract-OCR/tesseract.exe"
   }
 }
 ```
 
-If the JSON parser rejects the file (you forgot to escape a backslash) the
-server logs a loud `[main:load_config]` line to stderr and reports
-`config_error` plus an `ocr` diagnostic block at `GET /api/healthz`.
+If the JSON parser rejects the file (forgotten backslash escape) the server
+logs a `[main:load_config]` error and reports `config_error` at `GET /api/healthz`.
 
-**VLM descriptions (optional, all platforms)**
+**VLM / Claude Vision (optional, all platforms)**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 # Then set vlm.enabled = true in config.json
@@ -153,7 +160,7 @@ or `--mode both`.
 | Tab | Content |
 |-----|---------|
 | **STRUCTURE** | Interactive collapsible JSON tree of the accessibility element hierarchy |
-| **DESCRIPTION** | Prose description; mode selector switches between accessibility / OCR / VLM / combined |
+| **DESCRIPTION** | Combined description from all available sources (accessibility tree, OCR, VLM). Each source is shown in its own labeled section. A badge row at the top shows which sources ran and how to enable any that are missing. |
 | **SKETCH** | ASCII spatial layout diagram (Unicode box-drawing characters) |
 | **SCREENSHOT** | Pixel screenshot, visible-area bounding boxes, and ASCII sketch (all in one panel) |
 | **ACTIONS** | Click at coordinates, type text, press key combinations |
@@ -219,12 +226,12 @@ in the tools menu. You can then ask Claude to:
 |------|-------------|
 | `list_windows` | Enumerate all visible top-level windows |
 | `get_window_structure` | Full accessibility element tree as JSON |
-| `get_screen_description` | Prose description (accessibility / ocr / vlm / combined) |
+| `get_screen_description` | Combined description from all available sources (accessibility tree + OCR + VLM). No mode parameter needed — returns everything the platform supports. |
 | `get_screen_sketch` | ASCII spatial layout diagram |
 | `get_screenshot` | Screenshot as base64 PNG |
 | `get_full_screenshot` | Screenshot + ASCII sketch in one call (sketch uses OCR overlay) |
 | `get_visible_areas` | Visible (non-occluded, on-screen) bounding boxes for a window |
-| `bring_to_foreground` | Click the title bar of a window to raise it above other windows |
+| `bring_to_foreground` | Raise a window using the platform focus API; falls back to title-bar click |
 | `click_at` | Click at pixel coordinates |
 | `type_text` | Type text into the focused element |
 | `press_key` | Press a key combination (e.g., `ctrl+c`, `alt+f4`) |
@@ -240,7 +247,7 @@ The web inspector exposes the following endpoints (all `GET` unless noted):
 |----------|--------|-------------|
 | `GET /api/windows` | — | List all visible windows |
 | `GET /api/structure` | `window_index` | Accessibility element tree (JSON) |
-| `GET /api/description` | `window_index`, `mode` | Prose description |
+| `GET /api/description` | `window_index` | Combined description (accessibility + OCR + VLM, whatever is available) |
 | `GET /api/sketch` | `window_index`, `grid_width`, `grid_height`, `ocr` | ASCII layout sketch |
 | `GET /api/screenshot` | `window_index` | Screenshot as base64 PNG |
 | `GET /api/full_screenshot` | `window_index`, `grid_width`, `grid_height` | Screenshot + ASCII sketch (sketch uses OCR overlay) |
@@ -370,23 +377,25 @@ screen_observer/
 
 ## Platform Support Status
 
-| Feature | Windows | macOS | Linux |
-|---------|---------|-------|-------|
-| Window enumeration | ✅ Full | ✅ (via AppleScript) | ✅ (via wmctrl) |
-| Accessibility tree | ✅ Full UIA | 🔶 Stub | 🔶 Stub |
-| Screenshot | ✅ | ✅ | ✅ |
-| OCR | ✅ | ✅ | ✅ |
-| VLM description | ✅ | ✅ | ✅ |
-| ASCII sketch | ✅ Full | 🔶 Sketch from stub tree | 🔶 Sketch from stub tree |
-| Input actions | ✅ | ✅ | ✅ |
-| Mock mode | ✅ | ✅ | ✅ |
+| Feature | Windows | macOS | Linux | WSL |
+|---------|---------|-------|-------|-----|
+| Window enumeration | ✅ Full (`win32gui`) | ✅ (`Quartz` / AppleScript) | ✅ (`wmctrl`) | ✅ (`wmctrl` or PowerShell fallback) |
+| Accessibility tree | ✅ Full UIA + pywinauto | ✅ (`pyobjc` AXUIElement) | ✅ (`pyatspi`) | 🔶 Stub (no X11 without DISPLAY) |
+| Screenshot | ✅ `PrintWindow` → `mss` | ✅ `mss` | ✅ `mss` → `scrot` | ✅ `mss` (if DISPLAY) or PowerShell |
+| OCR | ✅ | ✅ | ✅ | ✅ |
+| VLM description | ✅ | ✅ | ✅ | ✅ |
+| ASCII sketch | ✅ | ✅ | ✅ | ✅ |
+| Input actions | ✅ | ✅ | ✅ | 🔶 (`pyautogui` needs DISPLAY) |
+| Mock mode | ✅ | ✅ | ✅ | ✅ |
 
-Full macOS AX tree support requires implementing `MacOSAdapter.get_element_tree()`
-using `pyobjc` (`AXUIElementCreateSystemWide`, `kAXChildrenAttribute`, etc.).
-Full Linux AT-SPI tree support requires implementing `LinuxAdapter.get_element_tree()`
-using `pyatspi` (`pyatspi.Registry.getDesktop(0)`, `pyatspi.findAllDescendants()`).
-Both are well-understood engineering tasks; the adapter stubs in `observer.py`
-provide the correct extension points.
+`get_screen_description` always returns everything the current platform supports
+in a single call — no mode parameter required. The web inspector's Description
+tab shows which sources ran (✓) and how to enable missing ones (✗).
+
+All adapters degrade gracefully: if a library is not installed or a capability
+is unavailable, the server continues running and returns whatever it can.
+Optional dependencies for macOS (`pyobjc`) and Linux (`pyatspi`) are auto-installed
+via `mac_adapter.py` / `linux_adapter.py` when present.
 
 ---
 
