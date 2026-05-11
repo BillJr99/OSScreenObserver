@@ -1,0 +1,12 @@
+# Normalize line endings to LF in the repo; check out as-is on all platforms.
+* text=auto eol=lf
+
+# Binary files — never touch line endings.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.whl binary

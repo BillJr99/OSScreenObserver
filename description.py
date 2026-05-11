@@ -100,7 +100,7 @@ class DescriptionGenerator:
 
             lines.append(
                 f"Root: {root.role}"
-                + (f'  "{_truncate(root.name, 60)}"' if root.name else "")
+                + (f'  "{root.name}"' if root.name else "")
             )
 
             def _describe(elem: UIElement, depth: int = 1) -> None:
@@ -108,7 +108,7 @@ class DescriptionGenerator:
                 parts  = [elem.role]
 
                 if elem.name:
-                    parts.append(f'"{_truncate(elem.name, 40)}"')
+                    parts.append(f'"{elem.name}"')
                 if elem.value is not None:
                     v = _truncate(elem.value, 60)
                     parts.append(f"= {v!r}")

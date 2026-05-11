@@ -10,7 +10,7 @@
   },
   "ocr": {
     "enabled": true,
-    "tesseract_cmd": null,
+    "tesseract_cmd": "c:\\Program Files\\Tesseract-OCR\\tesseract.exe",
     "min_confidence": 30
   },
   "vlm": {
