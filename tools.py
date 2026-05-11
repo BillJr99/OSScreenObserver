@@ -1281,6 +1281,8 @@ def get_ocr(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         import io as _io
         from PIL import Image
         import pytesseract
+        from ocr_util import configure as _ocr_configure
+        _ocr_configure(ctx.config)
     except Exception:
         return error_dict(Code.PLATFORM_UNSUPPORTED,
                           "pytesseract / Pillow not installed",
@@ -1319,7 +1321,18 @@ def get_ocr(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
             img = img.crop((x, y, x2, y2))
 
     min_conf = (ctx.config.get("ocr", {}) or {}).get("min_confidence", 30)
-    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    try:
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    except pytesseract.TesseractNotFoundError:
+        from ocr_util import diagnose as _ocr_diag
+        return error_dict(
+            Code.PLATFORM_UNSUPPORTED,
+            "tesseract binary not found — check ocr.tesseract_cmd in config.json",
+            step_id=step_id, **_ocr_diag(ctx.config),
+        )
+    except Exception as e:
+        return error_dict(Code.INTERNAL, f"OCR failed: {e}",
+                          step_id=step_id)
     out_words: List[Dict[str, Any]] = []
     for i, text in enumerate(data["text"]):
         text = (text or "").strip()

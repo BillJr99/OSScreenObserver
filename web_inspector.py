@@ -1587,12 +1587,24 @@ def create_web_app(
     def api_healthz():
         from session import get_session
         s = get_session()
-        return jsonify({
+        out = {
             "ok": True,
             "uptime_s": int(s.steps.uptime_s),
             "step_count": s.steps.count,
             "adapter": type(observer._adapter).__name__,
             "version": (config.get("mcp", {}) or {}).get("version", "0.2.0"),
-        })
+        }
+        # Surface common misconfigurations.
+        try:
+            from main import config_load_status
+            out.update(config_load_status())
+        except Exception:
+            pass
+        try:
+            from ocr_util import diagnose as _ocr_diag
+            out["ocr"] = _ocr_diag(config)
+        except Exception:
+            pass
+        return jsonify(out)
 
     return app

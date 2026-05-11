@@ -59,10 +59,33 @@ _DEFAULT_CONFIG = {
 }
 
 
+_CONFIG_LOAD_ERROR: str = ""
+_CONFIG_PATH_USED: str = ""
+
+
 def load_config(path: str) -> dict:
+    global _CONFIG_LOAD_ERROR, _CONFIG_PATH_USED
+    _CONFIG_LOAD_ERROR = ""
+    _CONFIG_PATH_USED = path
     try:
         with open(path) as f:
-            cfg = json.load(f)
+            raw = f.read()
+        try:
+            cfg = json.loads(raw)
+        except json.JSONDecodeError as e:
+            hint = ""
+            if "Invalid \\escape" in str(e):
+                hint = (
+                    "  HINT: JSON requires backslashes inside strings to be "
+                    "escaped.  On Windows, write the path with double "
+                    "backslashes ('c:\\\\program files\\\\tesseract-ocr\\\\"
+                    "tesseract.exe') or forward slashes "
+                    "('c:/program files/tesseract-ocr/tesseract.exe')."
+                )
+            msg = f"config.json parse error: {e}.{hint}"
+            _CONFIG_LOAD_ERROR = msg
+            print(f"\n[main:load_config] {msg}\n", file=sys.stderr)
+            return dict(_DEFAULT_CONFIG)
         # Deep-merge with defaults so missing keys are always present
         merged = dict(_DEFAULT_CONFIG)
         for k, v in cfg.items():
@@ -72,13 +95,21 @@ def load_config(path: str) -> dict:
                 merged[k] = v
         return merged
     except FileNotFoundError:
-        print(f"[main:load_config] Config not found at {path!r}; using built-in defaults",
-              file=sys.stderr)
+        msg = f"Config not found at {path!r}; using built-in defaults"
+        _CONFIG_LOAD_ERROR = msg
+        print(f"[main:load_config] {msg}", file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
     except Exception as e:
+        _CONFIG_LOAD_ERROR = f"{type(e).__name__}: {e}"
         print(f"[main:load_config] {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
+
+
+def config_load_status() -> dict:
+    """Reported by /api/healthz so misconfigurations are obvious."""
+    return {"config_path": _CONFIG_PATH_USED,
+            "config_error": _CONFIG_LOAD_ERROR or None}
 
 
 def setup_logging(config: dict) -> None:

@@ -63,12 +63,13 @@ class DescriptionGenerator:
         self.vlm_cfg   = config.get("vlm",  {})
         self.ocr_cfg   = config.get("ocr",  {})
 
-        if self.ocr_cfg.get("tesseract_cmd"):
-            try:
-                import pytesseract
-                pytesseract.pytesseract.tesseract_cmd = self.ocr_cfg["tesseract_cmd"]
-            except ImportError:
-                logger.warning("[DescriptionGenerator] pytesseract not installed")
+        # Apply tesseract_cmd globally so every callsite (description, tools,
+        # oracles, ascii_renderer) sees the configured path.
+        try:
+            from ocr_util import configure as _ocr_configure
+            _ocr_configure(config)
+        except Exception:
+            pass
 
     # ── Accessibility tree → prose ────────────────────────────────────────────
 
@@ -166,6 +167,8 @@ class DescriptionGenerator:
         try:
             import pytesseract
             from PIL import Image
+            from ocr_util import configure as _ocr_configure
+            _ocr_configure(self.config)
 
             min_conf = self.ocr_cfg.get("min_confidence", 30)
             img  = Image.open(io.BytesIO(screenshot_bytes))
@@ -206,7 +209,18 @@ class DescriptionGenerator:
         except Exception as e:
             print(f"[DescriptionGenerator:from_ocr] {e}")
             traceback.print_exc()
-            return f"[OCR failed: {e}]"
+            # Surface the diagnostic so the user can see what tesseract_cmd
+            # resolved to (or didn't).
+            try:
+                from ocr_util import diagnose as _ocr_diag
+                diag = _ocr_diag(self.config)
+            except Exception:
+                diag = {}
+            return (f"[OCR failed: {e}; "
+                    f"tesseract_cmd={diag.get('configured_path')!r}, "
+                    f"exists={diag.get('configured_path_exists')}, "
+                    f"version={diag.get('version')}, "
+                    f"on_PATH={diag.get('path_discovered')!r}]")
 
     # ── VLM (Claude Vision) ───────────────────────────────────────────────────
 

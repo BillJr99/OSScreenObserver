@@ -82,6 +82,13 @@ def _ocr_words(screenshot_bytes: bytes) -> List[Tuple[int, int, int, int, str]]:
         import pytesseract
         from PIL import Image
 
+        # Pick up any tesseract_cmd that the user set in config.json.
+        try:
+            from ocr_util import configure as _ocr_configure
+            _ocr_configure(None)   # idempotent; uses last-set value
+        except Exception:
+            pass
+
         img  = Image.open(_io.BytesIO(screenshot_bytes)).convert("RGB")
         data = pytesseract.image_to_data(
             img,
