@@ -254,6 +254,180 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
                 payload[k] = args[k]
         return api_action(rest, payload)
 
+    # ── P1: identity / discovery ────────────────────────────────────────────
+    elif tool_name == "get_capabilities":
+        return _get(rest, "/api/capabilities")
+
+    elif tool_name == "get_monitors":
+        return _get(rest, "/api/monitors")
+
+    elif tool_name == "find_element":
+        params: Dict[str, Any] = {"selector": args["selector"]}
+        if "window_uid" in args:
+            params["window_uid"] = args["window_uid"]
+        elif wi is not None:
+            params["window_index"] = wi
+        return _get(rest, "/api/find_element", params)
+
+    # ── P1 / P6: element-targeted actions ───────────────────────────────────
+    elif tool_name in ("click_element", "focus_element", "invoke_element",
+                       "set_value", "select_option",
+                       "right_click_element", "double_click_element",
+                       "hover_element", "clear_text", "key_into_element"):
+        body = dict(args)
+        if "window_index" not in body and "window_uid" not in body and wi is not None:
+            body["window_index"] = wi
+        path = {
+            "click_element":         "/api/element/click",
+            "focus_element":         "/api/element/focus",
+            "invoke_element":        "/api/element/invoke",
+            "set_value":             "/api/element/set_value",
+            "select_option":         "/api/element/select",
+            "right_click_element":   "/api/element/right_click",
+            "double_click_element":  "/api/element/double_click",
+            "hover_element":         "/api/hover",
+            "clear_text":            "/api/element/clear_text",
+            "key_into_element":      "/api/element/key",
+        }[tool_name]
+        return _post(rest, path, body)
+
+    elif tool_name == "hover_at":
+        return _post(rest, "/api/hover", {k: args[k] for k in args
+                                          if k in ("x", "y", "hover_ms")})
+
+    elif tool_name == "drag":
+        body = dict(args)
+        if "window_index" not in body and "window_uid" not in body and wi is not None:
+            body["window_index"] = wi
+        return _post(rest, "/api/drag", body)
+
+    # ── P2: synchronisation and observation ─────────────────────────────────
+    elif tool_name == "wait_for":
+        body = dict(args)
+        return _post(rest, "/api/wait_for", body)
+
+    elif tool_name == "wait_idle":
+        body = dict(args)
+        if "window_index" not in body and "window_uid" not in body and wi is not None:
+            body["window_index"] = wi
+        return _post(rest, "/api/wait_idle", body)
+
+    elif tool_name == "observe_window_diff":
+        params: Dict[str, Any] = {}
+        if "window_uid" in args:
+            params["window_uid"] = args["window_uid"]
+        elif wi is not None:
+            params["window_index"] = wi
+        if "since" in args:
+            params["since"] = args["since"]
+        if "format" in args:
+            params["format"] = args["format"]
+        return _get(rest, "/api/observe", params)
+
+    elif tool_name in ("click_element_and_observe", "type_and_observe",
+                       "press_key_and_observe"):
+        path = {
+            "click_element_and_observe": "/api/element/click_and_observe",
+            "type_and_observe":          "/api/type_and_observe",
+            "press_key_and_observe":     "/api/key_and_observe",
+        }[tool_name]
+        body = dict(args)
+        if "window_index" not in body and "window_uid" not in body and wi is not None:
+            body["window_index"] = wi
+        return _post(rest, path, body)
+
+    # ── P2: snapshots ───────────────────────────────────────────────────────
+    elif tool_name == "snapshot":
+        return _post(rest, "/api/snapshot", {})
+
+    elif tool_name == "snapshot_get":
+        return _get(rest, f"/api/snapshot/{args['snapshot_id']}")
+
+    elif tool_name == "snapshot_diff":
+        return _post(rest, "/api/snapshot/diff",
+                     {k: args[k] for k in args if k in ("a", "b", "format")})
+
+    elif tool_name == "snapshot_drop":
+        sid = args["snapshot_id"]
+        url = rest.rstrip("/") + f"/api/snapshot/{sid}"
+        req = urllib.request.Request(url, method="DELETE")
+        with _NO_REDIRECT_OPENER.open(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+
+    # ── P4: tracing, replay, scenarios, oracles ─────────────────────────────
+    elif tool_name == "trace_start":
+        return _post(rest, "/api/trace/start",
+                     {"label": args.get("label", "")})
+    elif tool_name == "trace_stop":
+        return _post(rest, "/api/trace/stop", {})
+    elif tool_name == "trace_status":
+        return _get(rest, "/api/trace/status")
+
+    elif tool_name == "replay_start":
+        return _post(rest, "/api/replay/start",
+                     {k: args[k] for k in args
+                      if k in ("path", "mode", "on_divergence")})
+    elif tool_name == "replay_step":
+        return _post(rest, "/api/replay/step",
+                     {"replay_id": args["replay_id"]})
+    elif tool_name == "replay_status":
+        return _post(rest, "/api/replay/status",
+                     {"replay_id": args["replay_id"]})
+    elif tool_name == "replay_stop":
+        return _post(rest, "/api/replay/stop",
+                     {"replay_id": args["replay_id"]})
+
+    elif tool_name == "load_scenario":
+        return _post(rest, "/api/scenario/load", {"path": args["path"]})
+
+    elif tool_name == "assert_state":
+        return _post(rest, "/api/assert_state",
+                     {"predicate": args.get("predicate", args.get("predicates", []))})
+
+    # ── P5: safety & status ─────────────────────────────────────────────────
+    elif tool_name == "get_budget_status":
+        return _get(rest, "/api/budget_status")
+
+    elif tool_name == "get_redaction_status":
+        return _get(rest, "/api/redaction_status")
+
+    elif tool_name == "propose_action":
+        return _post(rest, "/api/propose_action",
+                     {"action": args["action"], "args": args.get("args", {})})
+
+    # ── P3 extras ───────────────────────────────────────────────────────────
+    elif tool_name == "get_screenshot_cropped":
+        # Pixel data is huge — same omission policy as get_screenshot.
+        params: Dict[str, Any] = {}
+        if "window_uid" in args:
+            params["window_uid"] = args["window_uid"]
+        elif wi is not None:
+            params["window_index"] = wi
+        for k in ("element_id", "padding_px", "max_width"):
+            if k in args:
+                params[k] = args[k]
+        result = _get(rest, "/api/screenshot/cropped", params)
+        if "data" in result:
+            result = {k: v for k, v in result.items() if k != "data"}
+            result["note"] = "Screenshot captured (base64 data omitted)."
+        return result
+
+    elif tool_name == "get_ocr":
+        params: Dict[str, Any] = {}
+        if "window_uid" in args:
+            params["window_uid"] = args["window_uid"]
+        elif wi is not None:
+            params["window_index"] = wi
+        if "element_id" in args:
+            params["element_id"] = args["element_id"]
+        return _get(rest, "/api/ocr", params)
+
+    # ── Catch-all: drive any registered tool by name ────────────────────────
+    elif tool_name == "call_tool":
+        name = args["name"]
+        body = args.get("args", {}) or {}
+        return _post(rest, f"/api/tool/{name}", body)
+
     else:
         return {"error": f"Unknown tool: {tool_name}"}
 
@@ -501,10 +675,10 @@ SCREEN_TOOLS: List[Dict] = [
         "function": {
             "name": "bring_to_foreground",
             "description": (
-                "Bring a window to the foreground by clicking in its title-bar area. "
-                "Computes the visible region of the window and clicks near the top-centre "
-                "(title bar) to raise it above other windows. "
-                "Call this when a window is behind other windows and you need to interact with it."
+                "Bring a window to the foreground by clicking inside its title bar.  "
+                "Avoids the left and right control-button margins where minimize / "
+                "maximize / close live, and prefers an explicit TitleBar element "
+                "when one is exposed by the accessibility tree."
             ),
             "parameters": {
                 "type": "object",
@@ -512,6 +686,646 @@ SCREEN_TOOLS: List[Dict] = [
                     "window_index": {"type": "integer", "description": "Index from list_windows."},
                 },
                 "required": ["window_index"],
+            },
+        },
+    },
+
+    # ── P1: discovery + element targeting ────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "get_capabilities",
+            "description": "Report which features the server supports on this host.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_monitors",
+            "description": "Enumerate monitors with bounds + scale factor.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_element",
+            "description": (
+                "Resolve a selector to a concrete element_id and bounds.  "
+                "Selector grammar accepts XPath-ish "
+                '(Window/Pane/Button[name="OK"]) or CSS-ish '
+                "(Window > Pane Button[name=\"OK\"]).  ambiguous_matches > 1 "
+                "signals a brittle selector."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": ["selector"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click_element",
+            "description": (
+                "Click an element by selector or element_id.  Prefer this over "
+                "click_at because it self-recovers from layout shifts and "
+                "returns an ActionReceipt with before/after tree hashes, "
+                "changed flag, and new_dialogs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":      {"type": "string"},
+                    "element_id":    {"type": "string"},
+                    "window_uid":    {"type": "string"},
+                    "window_index":  {"type": "integer"},
+                    "button":        {"type": "string", "enum": ["left", "right", "middle"]},
+                    "count":         {"type": "integer"},
+                    "dry_run":       {"type": "boolean"},
+                    "confirm_token": {"type": "string"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "focus_element",
+            "description": "Give keyboard focus to an element identified by selector or element_id.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":   {"type": "string"},
+                    "element_id": {"type": "string"},
+                    "window_uid": {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_value",
+            "description": (
+                "Set the textual value of an editable element (clicks it, "
+                "optionally clears, then types the value)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "value":        {"type": "string"},
+                    "clear_first":  {"type": "boolean"},
+                },
+                "required": ["value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "invoke_element",
+            "description": "Invoke an element's primary action (UIA InvokePattern preferred; falls back to click).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "select_option",
+            "description": "Open a combo-box / list and select an option by name or zero-based index.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "option_name":  {"type": "string"},
+                    "option_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+
+    # ── P6: extra input verbs ────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "hover_at",
+            "description": "Move the mouse to (x, y) and pause hover_ms (default 250).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer"}, "y": {"type": "integer"},
+                    "hover_ms": {"type": "integer"},
+                },
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hover_element",
+            "description": "Move the mouse to an element's centre and pause hover_ms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "hover_ms":     {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "right_click_element",
+            "description": "Right-click an element (synonym for click_element with button=right).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "double_click_element",
+            "description": "Double-click an element.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "key_into_element",
+            "description": "Click an element then press a key combination atomically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "keys":         {"type": "string"},
+                },
+                "required": ["keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_text",
+            "description": "Click an editable element and select-all + delete to clear it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":     {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "drag",
+            "description": (
+                "Drag from a starting point to an end point.  Each endpoint is "
+                "{x,y} or {selector} or {element_id}."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "from":      {"type": "object"},
+                    "to":        {"type": "object"},
+                    "modifiers": {"type": "array", "items": {"type": "string"}},
+                    "duration_s": {"type": "number"},
+                    "window_index": {"type": "integer"},
+                    "window_uid":   {"type": "string"},
+                },
+                "required": ["from", "to"],
+            },
+        },
+    },
+
+    # ── P2: synchronisation ────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "wait_for",
+            "description": (
+                "Block until any of the conditions matches or timeout.  "
+                "Conditions: element_appears, element_disappears, text_visible, "
+                "window_appears, window_disappears, tree_changes, focused_changes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "any_of":     {"type": "array"},
+                    "window_uid": {"type": "string"},
+                    "timeout_ms": {"type": "integer"},
+                    "poll_ms":    {"type": "integer"},
+                },
+                "required": ["any_of"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "wait_idle",
+            "description": "Block until the tree hash is stable for quiet_ms.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "quiet_ms":     {"type": "integer"},
+                    "timeout_ms":   {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "observe_window_diff",
+            "description": (
+                "Like observe_window but returns only the diff against a previous "
+                "tree_token (passed as since=).  An expired or unknown token "
+                "returns the full tree."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_uid":   {"type": "string"},
+                    "window_index": {"type": "integer"},
+                    "since":        {"type": "string"},
+                    "format":       {"type": "string", "enum": ["custom", "json-patch"]},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "click_element_and_observe",
+            "description": "Click an element, wait briefly, then return the post-click observation/diff.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector":      {"type": "string"},
+                    "element_id":    {"type": "string"},
+                    "window_uid":    {"type": "string"},
+                    "window_index":  {"type": "integer"},
+                    "button":        {"type": "string"},
+                    "wait_after_ms": {"type": "integer"},
+                    "since":         {"type": "string"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "type_and_observe",
+            "description": "type_text + observe_window in one round-trip.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text":          {"type": "string"},
+                    "wait_after_ms": {"type": "integer"},
+                    "since":         {"type": "string"},
+                    "window_uid":    {"type": "string"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "press_key_and_observe",
+            "description": "press_key + observe_window in one round-trip.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys":          {"type": "string"},
+                    "wait_after_ms": {"type": "integer"},
+                    "since":         {"type": "string"},
+                    "window_uid":    {"type": "string"},
+                },
+                "required": ["keys"],
+            },
+        },
+    },
+
+    # ── P2: snapshots ───────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "snapshot",
+            "description": "Capture the current state of all windows + trees.  Returns a snapshot_id.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "snapshot_get",
+            "description": "Retrieve a snapshot by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"snapshot_id": {"type": "string"}},
+                "required": ["snapshot_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "snapshot_diff",
+            "description": "Compare two snapshots (added/removed windows + per-window tree diff).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "a":      {"type": "string"},
+                    "b":      {"type": "string"},
+                    "format": {"type": "string", "enum": ["custom", "json-patch"]},
+                },
+                "required": ["a", "b"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "snapshot_drop",
+            "description": "Free a snapshot before its TTL expires.",
+            "parameters": {
+                "type": "object",
+                "properties": {"snapshot_id": {"type": "string"}},
+                "required": ["snapshot_id"],
+            },
+        },
+    },
+
+    # ── P4: harness ─────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "trace_start",
+            "description": "Start recording every tool call into a JSONL trace file.",
+            "parameters": {
+                "type": "object",
+                "properties": {"label": {"type": "string"}},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "trace_stop",
+            "description": "Close the active trace.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "trace_status",
+            "description": "Report whether a trace is active.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replay_start",
+            "description": "Load a trace and prepare to replay it (execute or verify).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path":          {"type": "string"},
+                    "mode":          {"type": "string", "enum": ["execute", "verify"]},
+                    "on_divergence": {"type": "string", "enum": ["stop", "warn", "resume"]},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replay_step",
+            "description": "Advance one row of the active replay.",
+            "parameters": {
+                "type": "object",
+                "properties": {"replay_id": {"type": "string"}},
+                "required": ["replay_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replay_status",
+            "description": "Report replay position, total, finished, and divergences.",
+            "parameters": {
+                "type": "object",
+                "properties": {"replay_id": {"type": "string"}},
+                "required": ["replay_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "replay_stop",
+            "description": "Free a replay handle.",
+            "parameters": {
+                "type": "object",
+                "properties": {"replay_id": {"type": "string"}},
+                "required": ["replay_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_scenario",
+            "description": "Load a YAML scenario file into the mock adapter.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assert_state",
+            "description": (
+                "Evaluate a list of declarative predicates against the current "
+                "state.  Predicates: element_exists, element_absent, value_equals, "
+                "value_matches, text_visible, window_focused, window_exists, "
+                "tree_hash_equals, screenshot_similar.  Returns all_passed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "predicate":  {"type": "array"},
+                    "predicates": {"type": "array"},
+                },
+                "required": [],
+            },
+        },
+    },
+
+    # ── P5: safety ──────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "get_budget_status",
+            "description": "Report remaining budget (actions, screenshots, vlm_tokens, …).",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_redaction_status",
+            "description": "Report redaction enabled state and applied count.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_action",
+            "description": (
+                "Issue a single-use confirm_token bound to (window_uid, selector, "
+                "bbox) for a destructive action.  Call the action with the "
+                "returned confirm_token to proceed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "args":   {"type": "object"},
+                },
+                "required": ["action"],
+            },
+        },
+    },
+
+    # ── P3 extras ───────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "get_screenshot_cropped",
+            "description": "Cropped screenshot (element_id or bbox) with optional max_width downscale.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_index": {"type": "integer"},
+                    "window_uid":   {"type": "string"},
+                    "element_id":   {"type": "string"},
+                    "padding_px":   {"type": "integer"},
+                    "max_width":    {"type": "integer"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_ocr",
+            "description": "Region-scoped OCR returning [{text, confidence, bbox}].",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_index": {"type": "integer"},
+                    "window_uid":   {"type": "string"},
+                    "element_id":   {"type": "string"},
+                },
+                "required": [],
+            },
+        },
+    },
+
+    # ── Catch-all: drive any registered server tool by name ────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "call_tool",
+            "description": (
+                "Call any tool registered on the OS Screen Observer server by name.  "
+                "Use this for tools not covered by a dedicated wrapper above; "
+                "the JSON args body is forwarded as-is."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "args": {"type": "object"},
+                },
+                "required": ["name"],
             },
         },
     },

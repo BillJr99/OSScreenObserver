@@ -340,6 +340,193 @@ details > summary::-webkit-details-marker { display: none; }
             </div>
             <div class="action-result" id="bring-result-actions"></div>
           </div>
+
+          <!-- ── Element-targeted actions (P1 + P6) ───────────────────────── -->
+          <div class="action-group">
+            <h3>ELEMENT TARGET</h3>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px">
+              Used by every action below.  Selector grammar: Window/Pane/Button[name="OK"].
+              window_uid auto-fills from the sidebar selection.
+            </div>
+            <div class="action-row">
+              <div class="field" style="flex:1"><label>SELECTOR</label><input type="text" id="el-selector" placeholder='Window/MenuBar/MenuItem[name="Edit"]' style="width:360px"/></div>
+              <div class="field"><label>OR ELEMENT_ID</label><input type="text" id="el-id" placeholder="root.0.1"/></div>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <button class="action-btn" onclick="doFindElement()">FIND</button>
+              <button class="action-btn" onclick="doElement('click_element', '/api/element/click', {button: document.getElementById('el-button').value, count: parseInt(document.getElementById('el-count').value)||1})">CLICK</button>
+              <button class="action-btn" onclick="doElement('focus_element', '/api/element/focus', {})">FOCUS</button>
+              <button class="action-btn" onclick="doElement('invoke_element', '/api/element/invoke', {})">INVOKE</button>
+              <button class="action-btn" onclick="doElement('right_click_element', '/api/element/right_click', {})">R-CLICK</button>
+              <button class="action-btn" onclick="doElement('double_click_element', '/api/element/double_click', {})">DBL-CLICK</button>
+              <button class="action-btn" onclick="doElement('hover_element', '/api/hover', {hover_ms: parseInt(document.getElementById('el-hover-ms').value)||250})">HOVER</button>
+              <button class="action-btn" onclick="doElement('clear_text', '/api/element/clear_text', {})">CLEAR</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>BUTTON</label>
+                <select id="el-button" style="background:var(--panel);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:11px;padding:5px 8px;">
+                  <option>left</option><option>right</option><option>middle</option>
+                </select>
+              </div>
+              <div class="field"><label>COUNT</label><input type="number" id="el-count" class="small" value="1"/></div>
+              <div class="field"><label>HOVER MS</label><input type="number" id="el-hover-ms" class="small" value="250"/></div>
+            </div>
+            <div class="action-row" style="margin-top:10px">
+              <div class="field" style="flex:1"><label>SET VALUE</label><input type="text" id="el-value" placeholder="text to set"/></div>
+              <div class="field" style="flex-direction:row;align-items:center;gap:6px;margin-bottom:1px;">
+                <input type="checkbox" id="el-clear-first" checked style="accent-color:var(--cyan)"/>
+                <label style="text-transform:none;font-size:11px;cursor:pointer;" for="el-clear-first">clear_first</label>
+              </div>
+              <button class="action-btn" onclick="doElement('set_value', '/api/element/set_value', {value: document.getElementById('el-value').value, clear_first: document.getElementById('el-clear-first').checked})">SET VALUE</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>OPTION NAME</label><input type="text" id="el-opt-name" placeholder="e.g. Yes"/></div>
+              <div class="field"><label>OPTION INDEX</label><input type="number" id="el-opt-index" class="small" placeholder=""/></div>
+              <button class="action-btn" onclick="doSelectOption()">SELECT OPTION</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>KEYS INTO EL</label><input type="text" id="el-keys" placeholder="enter, ctrl+s, …"/></div>
+              <button class="action-btn" onclick="doElement('key_into_element', '/api/element/key', {keys: document.getElementById('el-keys').value})">KEY INTO</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field" style="flex-direction:row;align-items:center;gap:6px;margin-bottom:1px;">
+                <input type="checkbox" id="el-dry-run" style="accent-color:var(--cyan)"/>
+                <label style="text-transform:none;font-size:11px;cursor:pointer;" for="el-dry-run">dry_run</label>
+              </div>
+              <div class="field"><label>CONFIRM TOKEN</label><input type="text" id="el-confirm" placeholder="ct:…"/></div>
+              <button class="action-btn" onclick="doPropose()">PROPOSE ACTION</button>
+            </div>
+            <div class="action-result" id="el-result"></div>
+          </div>
+
+          <!-- ── Coordinate-level extras (P6) ──────────────────────────────── -->
+          <div class="action-group">
+            <h3>HOVER AT / DRAG (raw coords)</h3>
+            <div class="action-row">
+              <div class="field"><label>X</label><input type="number" id="hover-x" class="small"/></div>
+              <div class="field"><label>Y</label><input type="number" id="hover-y" class="small"/></div>
+              <div class="field"><label>MS</label><input type="number" id="hover-ms" class="small" value="250"/></div>
+              <button class="action-btn" onclick="doHoverAt()">HOVER AT</button>
+            </div>
+            <div class="action-row" style="margin-top:10px">
+              <div class="field"><label>FROM</label><input type="text" id="drag-from" placeholder='{"x":100,"y":200} or {"selector":"..."}'/></div>
+              <div class="field"><label>TO</label><input type="text" id="drag-to" placeholder='{"x":300,"y":400}'/></div>
+              <div class="field"><label>MODIFIERS</label><input type="text" id="drag-mods" placeholder="shift,ctrl"/></div>
+              <button class="action-btn" onclick="doDrag()">DRAG</button>
+            </div>
+            <div class="action-result" id="motion-result"></div>
+          </div>
+
+          <!-- ── Sync & observation (P2) ───────────────────────────────────── -->
+          <div class="action-group">
+            <h3>WAIT / OBSERVE</h3>
+            <div class="action-row">
+              <div class="field" style="flex:1"><label>any_of (JSON array)</label><input type="text" id="waitfor-any" placeholder='[{"type":"window_appears","title_regex":"Confirm"}]' style="width:400px"/></div>
+              <div class="field"><label>TIMEOUT MS</label><input type="number" id="waitfor-timeout" class="small" value="5000"/></div>
+              <div class="field"><label>POLL MS</label><input type="number" id="waitfor-poll" class="small" value="200"/></div>
+              <button class="action-btn" onclick="doWaitFor()">WAIT FOR</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>QUIET MS</label><input type="number" id="waitidle-quiet" class="small" value="750"/></div>
+              <div class="field"><label>TIMEOUT MS</label><input type="number" id="waitidle-timeout" class="small" value="5000"/></div>
+              <button class="action-btn" onclick="doWaitIdle()">WAIT IDLE</button>
+              <button class="action-btn" onclick="doObserve(false)">OBSERVE</button>
+              <button class="action-btn" onclick="doObserve(true)">OBSERVE DIFF</button>
+            </div>
+            <div class="action-result" id="wait-result"></div>
+          </div>
+
+          <!-- ── Snapshots (P2) ────────────────────────────────────────────── -->
+          <div class="action-group">
+            <h3>SNAPSHOTS</h3>
+            <div class="action-row">
+              <button class="action-btn" onclick="doSnapshotNew()">NEW SNAPSHOT</button>
+              <div class="field"><label>SNAPSHOT_ID</label><input type="text" id="snap-id" placeholder="snap:…"/></div>
+              <button class="action-btn" onclick="doSnapshotGet()">GET</button>
+              <button class="action-btn" onclick="doSnapshotDrop()">DROP</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>A</label><input type="text" id="snap-a" placeholder="snap:…"/></div>
+              <div class="field"><label>B</label><input type="text" id="snap-b" placeholder="snap:…"/></div>
+              <div class="field"><label>FORMAT</label>
+                <select id="snap-format" style="background:var(--panel);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:11px;padding:5px 8px;">
+                  <option>custom</option><option>json-patch</option>
+                </select>
+              </div>
+              <button class="action-btn" onclick="doSnapshotDiff()">DIFF</button>
+            </div>
+            <div class="action-result" id="snap-result"></div>
+          </div>
+
+          <!-- ── Tracing & replay (P4) ─────────────────────────────────────── -->
+          <div class="action-group">
+            <h3>TRACING / REPLAY / SCENARIOS</h3>
+            <div class="action-row">
+              <div class="field"><label>LABEL</label><input type="text" id="trace-label" placeholder="run-1"/></div>
+              <button class="action-btn" onclick="doTrace('/api/trace/start', {label: document.getElementById('trace-label').value})">TRACE START</button>
+              <button class="action-btn" onclick="doTrace('/api/trace/stop', {})">TRACE STOP</button>
+              <button class="action-btn" onclick="doTraceGet('/api/trace/status')">TRACE STATUS</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field" style="flex:1"><label>REPLAY PATH</label><input type="text" id="replay-path" placeholder="traces/trace-…/trace.jsonl"/></div>
+              <div class="field"><label>MODE</label>
+                <select id="replay-mode" style="background:var(--panel);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:11px;padding:5px 8px;">
+                  <option>execute</option><option>verify</option>
+                </select>
+              </div>
+              <button class="action-btn" onclick="doReplayStart()">REPLAY START</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>REPLAY ID</label><input type="text" id="replay-id" placeholder="rep:…"/></div>
+              <button class="action-btn" onclick="doReplay('/api/replay/step')">STEP</button>
+              <button class="action-btn" onclick="doReplay('/api/replay/status')">STATUS</button>
+              <button class="action-btn" onclick="doReplay('/api/replay/stop')">STOP</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field" style="flex:1"><label>SCENARIO YAML</label><input type="text" id="scn-path" placeholder="scenarios_examples/login.yaml"/></div>
+              <button class="action-btn" onclick="doScenarioLoad()">LOAD SCENARIO</button>
+            </div>
+            <div class="action-result" id="trace-result"></div>
+          </div>
+
+          <!-- ── Oracles (P4) ─────────────────────────────────────────────── -->
+          <div class="action-group">
+            <h3>ASSERT STATE</h3>
+            <div class="action-row">
+              <div class="field" style="flex:1"><label>PREDICATE (JSON list)</label><input type="text" id="assert-pred" placeholder='[{"kind":"text_visible","regex":"Saved"}]' style="width:500px"/></div>
+              <button class="action-btn" onclick="doAssertState()">ASSERT</button>
+            </div>
+            <div class="action-result" id="assert-result"></div>
+          </div>
+
+          <!-- ── Safety / discovery (P5 + P6) ──────────────────────────────── -->
+          <div class="action-group">
+            <h3>STATUS / DISCOVERY</h3>
+            <div class="action-row">
+              <button class="action-btn" onclick="doGetJSON('/api/capabilities','status-result')">CAPABILITIES</button>
+              <button class="action-btn" onclick="doGetJSON('/api/monitors','status-result')">MONITORS</button>
+              <button class="action-btn" onclick="doGetJSON('/api/budget_status','status-result')">BUDGET</button>
+              <button class="action-btn" onclick="doGetJSON('/api/redaction_status','status-result')">REDACTION</button>
+              <button class="action-btn" onclick="doGetJSON('/api/healthz','status-result')">HEALTHZ</button>
+              <button class="action-btn" onclick="doMetrics()">METRICS</button>
+            </div>
+            <div class="action-result" id="status-result"></div>
+          </div>
+
+          <!-- ── Generic tool console (covers every REGISTRY entry) ────────── -->
+          <div class="action-group">
+            <h3>RAW TOOL CALL</h3>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px">
+              Drives any registered tool by name with a JSON args body via /api/tool/&lt;name&gt;.
+            </div>
+            <div class="action-row">
+              <div class="field"><label>TOOL NAME</label><input type="text" id="raw-tool" placeholder="get_window_structure" list="raw-tools"/></div>
+              <datalist id="raw-tools"></datalist>
+              <div class="field" style="flex:1"><label>ARGS (JSON)</label><input type="text" id="raw-args" placeholder='{"window_index": 0}' style="width:400px"/></div>
+              <button class="action-btn" onclick="doRawTool()">RUN</button>
+            </div>
+            <div class="action-result" id="raw-result"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -534,11 +721,10 @@ async function loadFullDisplay() {
     if (data.error) { if (container) container.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; setStatus('ERROR'); return; }
     const dimMeta = data.width ? ` · ${data.width}×${data.height}px` : '';
     let html = `<span class="shot-meta" style="margin-top:8px;display:block">ALL MONITORS${dimMeta}</span>
-      <img src="data:image/png;base64,${data.data}" alt="full display screenshot" style="max-width:100%"/>`;
-    if (data.sketch) {
-      html += `<div class="desc-label" style="margin-top:14px">ASCII SKETCH (selected window)</div>`;
-      html += `<pre style="font-size:10px;line-height:1.3;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:12px 16px;overflow-x:auto">${esc(data.sketch)}</pre>`;
-    }
+      <img src="data:image/png;base64,${data.data}" alt="full display screenshot" style="max-width:100%"/>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-top:6px">
+        SKETCH IS RENDERED ON THE SKETCH TAB.
+      </div>`;
     if (container) container.innerHTML = html;
     setStatus('READY');
   } catch(e) {
@@ -588,6 +774,233 @@ function doType() {
 function doKey() {
   const keys = document.getElementById('key-combo').value;
   postAction({action:'key', value: keys}, 'key-result');
+}
+
+// ── P1-P6: element targeting + harness controls ──────────────────────────────
+function _elementBody(extra) {
+  const body = Object.assign({}, extra || {});
+  const sel = (document.getElementById('el-selector').value || '').trim();
+  const eid = (document.getElementById('el-id').value || '').trim();
+  if (sel) body.selector = sel;
+  if (eid) body.element_id = eid;
+  if (selectedIndex !== null) body.window_index = selectedIndex;
+  if (document.getElementById('el-dry-run').checked) body.dry_run = true;
+  const ct = (document.getElementById('el-confirm').value || '').trim();
+  if (ct) body.confirm_token = ct;
+  return body;
+}
+
+function _showResult(id, data) {
+  const el = document.getElementById(id);
+  el.classList.remove('visible', 'error');
+  el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  el.classList.add('visible');
+  if (data && data.ok === false) el.classList.add('error');
+}
+
+async function _postJSON(path, body, resultId) {
+  setStatus('CALLING ' + path);
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {})
+    });
+    const data = await r.json();
+    _showResult(resultId, data);
+    setStatus(data.ok === false ? (data.error && data.error.code) || 'ERROR' : 'OK');
+    return data;
+  } catch (e) {
+    _showResult(resultId, String(e));
+    setStatus('ERROR');
+  }
+}
+
+async function _getJSON(path, resultId) {
+  setStatus('CALLING ' + path);
+  try {
+    const r = await fetch(path);
+    const data = await r.json();
+    _showResult(resultId, data);
+    setStatus(data.ok === false ? (data.error && data.error.code) || 'ERROR' : 'OK');
+    return data;
+  } catch (e) {
+    _showResult(resultId, String(e));
+    setStatus('ERROR');
+  }
+}
+
+async function doFindElement() {
+  const sel = (document.getElementById('el-selector').value || '').trim();
+  if (!sel) { _showResult('el-result', 'enter a selector first'); return; }
+  const q = new URLSearchParams({selector: sel});
+  if (selectedIndex !== null) q.set('window_index', selectedIndex);
+  await _getJSON(`/api/find_element?${q.toString()}`, 'el-result');
+}
+
+async function doElement(tool, path, extra) {
+  await _postJSON(path, _elementBody(extra), 'el-result');
+}
+
+async function doSelectOption() {
+  const opt_name  = (document.getElementById('el-opt-name').value || '').trim();
+  const opt_idx_s = (document.getElementById('el-opt-index').value || '').trim();
+  const extra = {};
+  if (opt_name) extra.option_name = opt_name;
+  if (opt_idx_s !== '') extra.option_index = parseInt(opt_idx_s);
+  await _postJSON('/api/element/select', _elementBody(extra), 'el-result');
+}
+
+async function doPropose() {
+  // Propose the element-targeted action currently configured.
+  const body = {
+    action: 'click_element',
+    args: _elementBody({})
+  };
+  delete body.args.dry_run; delete body.args.confirm_token;
+  const data = await _postJSON('/api/propose_action', body, 'el-result');
+  if (data && data.confirm_token) {
+    document.getElementById('el-confirm').value = data.confirm_token;
+  }
+}
+
+async function doHoverAt() {
+  const x = parseInt(document.getElementById('hover-x').value) || 0;
+  const y = parseInt(document.getElementById('hover-y').value) || 0;
+  const hover_ms = parseInt(document.getElementById('hover-ms').value) || 250;
+  await _postJSON('/api/hover', {x, y, hover_ms}, 'motion-result');
+}
+
+async function doDrag() {
+  let from, to;
+  try { from = JSON.parse(document.getElementById('drag-from').value); }
+  catch (e) { _showResult('motion-result', 'from must be JSON: ' + e); return; }
+  try { to   = JSON.parse(document.getElementById('drag-to').value); }
+  catch (e) { _showResult('motion-result', 'to must be JSON: ' + e); return; }
+  const modsRaw = (document.getElementById('drag-mods').value || '').trim();
+  const modifiers = modsRaw ? modsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const body = {from, to, modifiers};
+  if (selectedIndex !== null) body.window_index = selectedIndex;
+  await _postJSON('/api/drag', body, 'motion-result');
+}
+
+async function doWaitFor() {
+  let any_of;
+  try { any_of = JSON.parse(document.getElementById('waitfor-any').value); }
+  catch (e) { _showResult('wait-result', 'any_of must be JSON: ' + e); return; }
+  const body = {
+    any_of,
+    timeout_ms: parseInt(document.getElementById('waitfor-timeout').value) || 5000,
+    poll_ms:    parseInt(document.getElementById('waitfor-poll').value)    || 200,
+  };
+  await _postJSON('/api/wait_for', body, 'wait-result');
+}
+
+async function doWaitIdle() {
+  const body = {
+    quiet_ms:   parseInt(document.getElementById('waitidle-quiet').value)   || 750,
+    timeout_ms: parseInt(document.getElementById('waitidle-timeout').value) || 5000,
+  };
+  if (selectedIndex !== null) body.window_index = selectedIndex;
+  await _postJSON('/api/wait_idle', body, 'wait-result');
+}
+
+let _lastObserveToken = null;
+async function doObserve(useDiff) {
+  const q = new URLSearchParams();
+  if (selectedIndex !== null) q.set('window_index', selectedIndex);
+  if (useDiff && _lastObserveToken) q.set('since', _lastObserveToken);
+  const data = await _getJSON(`/api/observe?${q.toString()}`, 'wait-result');
+  if (data && data.tree_token) _lastObserveToken = data.tree_token;
+}
+
+async function doSnapshotNew() {
+  const data = await _postJSON('/api/snapshot', {}, 'snap-result');
+  if (data && data.snapshot_id) document.getElementById('snap-id').value = data.snapshot_id;
+}
+async function doSnapshotGet() {
+  const sid = document.getElementById('snap-id').value.trim();
+  if (!sid) { _showResult('snap-result', 'enter snapshot_id'); return; }
+  await _getJSON(`/api/snapshot/${encodeURIComponent(sid)}`, 'snap-result');
+}
+async function doSnapshotDrop() {
+  const sid = document.getElementById('snap-id').value.trim();
+  if (!sid) { _showResult('snap-result', 'enter snapshot_id'); return; }
+  setStatus('DROPPING …');
+  const r = await fetch(`/api/snapshot/${encodeURIComponent(sid)}`, {method: 'DELETE'});
+  _showResult('snap-result', await r.json());
+  setStatus('OK');
+}
+async function doSnapshotDiff() {
+  const a = document.getElementById('snap-a').value.trim();
+  const b = document.getElementById('snap-b').value.trim();
+  const format = document.getElementById('snap-format').value;
+  await _postJSON('/api/snapshot/diff', {a, b, format}, 'snap-result');
+}
+
+async function doTrace(path, body) { await _postJSON(path, body, 'trace-result'); }
+async function doTraceGet(path)    { await _getJSON(path, 'trace-result'); }
+async function doReplayStart() {
+  const body = {
+    path: document.getElementById('replay-path').value.trim(),
+    mode: document.getElementById('replay-mode').value,
+  };
+  const data = await _postJSON('/api/replay/start', body, 'trace-result');
+  if (data && data.replay_id) document.getElementById('replay-id').value = data.replay_id;
+}
+async function doReplay(path) {
+  const rid = document.getElementById('replay-id').value.trim();
+  if (!rid) { _showResult('trace-result', 'enter replay_id'); return; }
+  await _postJSON(path, {replay_id: rid}, 'trace-result');
+}
+async function doScenarioLoad() {
+  const path = document.getElementById('scn-path').value.trim();
+  await _postJSON('/api/scenario/load', {path}, 'trace-result');
+}
+
+async function doAssertState() {
+  let predicate;
+  try { predicate = JSON.parse(document.getElementById('assert-pred').value); }
+  catch (e) { _showResult('assert-result', 'predicate must be JSON: ' + e); return; }
+  await _postJSON('/api/assert_state', {predicate}, 'assert-result');
+}
+
+async function doGetJSON(path, resultId) { await _getJSON(path, resultId); }
+async function doMetrics() {
+  setStatus('CALLING /api/metrics');
+  try {
+    const r = await fetch('/api/metrics');
+    _showResult('status-result', await r.text());
+    setStatus('OK');
+  } catch (e) {
+    _showResult('status-result', String(e));
+    setStatus('ERROR');
+  }
+}
+
+async function doRawTool() {
+  const tool = document.getElementById('raw-tool').value.trim();
+  if (!tool) { _showResult('raw-result', 'enter a tool name'); return; }
+  let args = {};
+  const raw = document.getElementById('raw-args').value.trim();
+  if (raw) {
+    try { args = JSON.parse(raw); }
+    catch (e) { _showResult('raw-result', 'args must be JSON: ' + e); return; }
+  }
+  await _postJSON(`/api/tool/${encodeURIComponent(tool)}`, args, 'raw-result');
+}
+
+// Populate the tool datalist once windows have loaded.
+async function _populateToolList() {
+  try {
+    const r = await fetch('/api/tools');
+    if (!r.ok) return;
+    const data = await r.json();
+    const list = document.getElementById('raw-tools');
+    if (list && Array.isArray(data.tools)) {
+      list.innerHTML = data.tools.map(n => `<option value="${esc(n)}"></option>`).join('');
+    }
+  } catch (e) {}
 }
 
 async function doBringToForeground(resultId) {
@@ -663,6 +1076,7 @@ function truncate(s, n) { return s.length > n ? s.slice(0, n-1) + '…' : s; }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadWindows(true);
+_populateToolList();
 </script>
 </body>
 </html>"""
@@ -1153,6 +1567,21 @@ def create_web_app(
             lines.append("oso_active_trace 0")
         body = "\n".join(lines) + "\n"
         return body, 200, {"Content-Type": "text/plain; version=0.0.4"}
+
+    # ── Generic tool console ────────────────────────────────────────────────
+
+    @app.route("/api/tools")
+    def api_tools_list():
+        return jsonify({"ok": True,
+                        "tools": sorted(_tools.REGISTRY.keys())})
+
+    @app.route("/api/tool/<name>", methods=["GET", "POST"])
+    def api_tool_run(name: str):
+        if request.method == "POST":
+            args = request.get_json(silent=True) or {}
+        else:
+            args = _merge_query()
+        return _tool_response(name, args)
 
     @app.route("/api/healthz")
     def api_healthz():

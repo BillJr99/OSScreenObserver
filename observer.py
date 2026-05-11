@@ -937,46 +937,41 @@ class ScreenObserver:
     def bring_to_foreground(self, target_hwnd: Any,
                             all_windows: List[WindowInfo]) -> Dict:
         """
-        Bring a window to the foreground by clicking in its title-bar area.
+        Bring a window to the foreground by clicking inside its title bar.
 
         Strategy
         --------
-        1. Compute the visible regions of the window (non-occluded, on-screen).
-           On Windows this uses real Z-order; on macOS/Linux the window is
-           assumed to be on top so the screen-clipped bounds are returned.
-        2. Pick the top-most region (lowest y-value) — that is where the title
-           bar lives. If multiple regions share the same top edge, prefer the
-           widest one.
-        3. Click near the top-centre of that region (~20 px below the top edge,
-           clamped to stay strictly inside the region).
+        1. Compute the visible (non-occluded, on-screen) regions of the window.
+        2. Try to locate a title-bar element in the accessibility tree (roles
+           include "TitleBar", "AXTitleBar", or any node whose name matches the
+           window title).  If found, click inside that element while staying
+           clear of the right-side window controls (minimize / maximize / close).
+        3. Otherwise click in the top strip's "safe zone" — about one-quarter
+           from the left, clamped away from both the left edge (where macOS's
+           traffic-light controls live) and the right edge (where Windows /
+           Linux controls live).  Very narrow windows fall back to the centre.
 
-        Returns the click result dict, or an error dict when no visible area
-        exists (window fully off-screen or, on Windows, fully occluded).
+        Returns the click result, or an error dict when no visible area
+        exists.
         """
         regions = self.get_visible_areas(target_hwnd, all_windows)
         if not regions:
-            # On Windows "no regions" means fully occluded; clicking the raw
-            # bounds would hit the covering window instead.  On macOS/Linux the
-            # platform adapter returns no occluders, so an empty result means
-            # the window is off-screen.  In both cases refuse the click.
             target = next((w for w in all_windows if w.handle == target_hwnd), None)
             if target is None:
                 return {"success": False, "error": "Window not found"}
             return {"success": False,
                     "error": "Window has no visible area (fully off-screen or occluded)"}
 
-        # Pick the top-most region (title bar is near the top of the window).
-        # Break ties by width so we prefer the widest strip at that y-level.
+        target = next((w for w in all_windows if w.handle == target_hwnd), None)
+
+        # Pick the top-most region.  Title bar is at the top of the window.
         best = min(regions, key=lambda r: (r["y"], -r["width"]))
 
-        # Click near the top-centre; offset ~20 px down (title bar height).
-        # Keep both coordinates strictly inside the region bounds.
-        title_bar_offset = min(20, max(1, (best["height"] - 1) // 2))
-        click_x = best["x"] + best["width"] // 2
-        click_y = best["y"] + title_bar_offset
-        # Clamp to region interior [x, x+width-1] × [y, y+height-1]
-        click_x = max(best["x"], min(best["x"] + best["width"]  - 1, click_x))
-        click_y = max(best["y"], min(best["y"] + best["height"] - 1, click_y))
+        # Try the tree first: an element identified as the title bar gives a
+        # known-safe click target.
+        click_x, click_y = self._title_bar_click_point(
+            target_hwnd, target, best,
+        )
 
         result = self.perform_action("click_at",
                                      value={"x": click_x, "y": click_y,
@@ -984,6 +979,98 @@ class ScreenObserver:
         result["clicked_x"] = click_x
         result["clicked_y"] = click_y
         return result
+
+    # ── Title-bar targeting (used by bring_to_foreground) ────────────────────
+
+    # Reserve these pixel margins for native window-control widgets.
+    _LEFT_CONTROL_MARGIN  = 90    # macOS traffic-lights
+    _RIGHT_CONTROL_MARGIN = 160   # Windows / Linux minimize/maximize/close
+    _MIN_SAFE_WIDTH       = 260   # below this, fall back to centre
+
+    _TITLEBAR_ROLES = {"TitleBar", "AXTitleBar", "title bar", "Title bar",
+                       "AXWindow"}
+
+    def _title_bar_click_point(self, target_hwnd: Any,
+                                window: Optional["WindowInfo"],
+                                region: Dict) -> tuple:
+        """Return (x, y) for a safe click inside the title bar of *region*."""
+        # 1. Try the accessibility tree.
+        try:
+            tree = self.get_element_tree(target_hwnd)
+        except Exception:
+            tree = None
+        bar = self._find_title_bar(tree, window.title if window else "") if tree else None
+        if bar is not None and bar.bounds and bar.bounds.width > 0:
+            tb = bar.bounds
+            # Intersect with the visible region so we don't click off-screen.
+            x1 = max(region["x"], tb.x)
+            y1 = max(region["y"], tb.y)
+            x2 = min(region["x"] + region["width"],  tb.right)
+            y2 = min(region["y"] + region["height"], tb.bottom)
+            if x2 > x1 and y2 > y1:
+                # Click 1/4 from the left of the title bar's visible width,
+                # but skip the leftmost control margin.
+                safe_left  = x1 + min(self._LEFT_CONTROL_MARGIN,  (x2 - x1) // 4)
+                safe_right = x2 - min(self._RIGHT_CONTROL_MARGIN, (x2 - x1) // 4)
+                if safe_right <= safe_left:
+                    cx = (x1 + x2) // 2
+                else:
+                    quarter = x1 + (x2 - x1) // 4
+                    cx = max(safe_left, min(safe_right, quarter))
+                cy = y1 + max(1, (y2 - y1) // 2)
+                return cx, cy
+
+        # 2. Fall back to the visible region's top strip.
+        rx = region["x"]
+        rw = region["width"]
+        ry = region["y"]
+        rh = region["height"]
+        if rw < self._MIN_SAFE_WIDTH:
+            cx = rx + rw // 2
+        else:
+            safe_left  = rx + self._LEFT_CONTROL_MARGIN
+            safe_right = rx + rw - self._RIGHT_CONTROL_MARGIN
+            candidate  = rx + rw // 4
+            if safe_right <= safe_left:
+                cx = rx + rw // 2
+            else:
+                cx = max(safe_left, min(safe_right, candidate))
+        title_bar_offset = min(12, max(1, (rh - 1) // 2))
+        cy = ry + title_bar_offset
+        # Clamp inside the region.
+        cx = max(rx, min(rx + rw - 1, cx))
+        cy = max(ry, min(ry + rh - 1, cy))
+        return cx, cy
+
+    def _find_title_bar(self, root: Optional["UIElement"],
+                         window_title: str) -> Optional["UIElement"]:
+        """Locate a title-bar-like element by role or by matching name.
+
+        Returns None for the root window itself (clicking the whole window's
+        center is precisely what we are trying to avoid).
+        """
+        if root is None:
+            return None
+        from collections import deque
+        queue = deque([(root, 0)])
+        while queue:
+            elem, depth = queue.popleft()
+            # Never return the root — its centre is the window body, not the
+            # title bar.
+            if depth > 0:
+                if (elem.role or "") in self._TITLEBAR_ROLES:
+                    return elem
+                if window_title and (elem.name or "").strip() == window_title.strip():
+                    # Must be near the top edge AND short — a real title bar.
+                    if (elem.bounds and root.bounds
+                            and (elem.bounds.y - root.bounds.y) < 40
+                            and elem.bounds.height <= 48):
+                        return elem
+            if depth > 3:
+                continue
+            for c in elem.children:
+                queue.append((c, depth + 1))
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
