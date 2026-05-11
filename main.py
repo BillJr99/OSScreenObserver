@@ -37,7 +37,6 @@ never polluted regardless of mode.
 import argparse
 import json
 import logging
-import os
 import sys
 import threading
 import traceback
@@ -60,10 +59,33 @@ _DEFAULT_CONFIG = {
 }
 
 
+_CONFIG_LOAD_ERROR: str = ""
+_CONFIG_PATH_USED: str = ""
+
+
 def load_config(path: str) -> dict:
+    global _CONFIG_LOAD_ERROR, _CONFIG_PATH_USED
+    _CONFIG_LOAD_ERROR = ""
+    _CONFIG_PATH_USED = path
     try:
         with open(path) as f:
-            cfg = json.load(f)
+            raw = f.read()
+        try:
+            cfg = json.loads(raw)
+        except json.JSONDecodeError as e:
+            hint = ""
+            if "Invalid \\escape" in str(e):
+                hint = (
+                    "  HINT: JSON requires backslashes inside strings to be "
+                    "escaped.  On Windows, write the path with double "
+                    "backslashes ('c:\\\\program files\\\\tesseract-ocr\\\\"
+                    "tesseract.exe') or forward slashes "
+                    "('c:/program files/tesseract-ocr/tesseract.exe')."
+                )
+            msg = f"config.json parse error: {e}.{hint}"
+            _CONFIG_LOAD_ERROR = msg
+            print(f"\n[main:load_config] {msg}\n", file=sys.stderr)
+            return dict(_DEFAULT_CONFIG)
         # Deep-merge with defaults so missing keys are always present
         merged = dict(_DEFAULT_CONFIG)
         for k, v in cfg.items():
@@ -73,13 +95,21 @@ def load_config(path: str) -> dict:
                 merged[k] = v
         return merged
     except FileNotFoundError:
-        print(f"[main:load_config] Config not found at {path!r}; using built-in defaults",
-              file=sys.stderr)
+        msg = f"Config not found at {path!r}; using built-in defaults"
+        _CONFIG_LOAD_ERROR = msg
+        print(f"[main:load_config] {msg}", file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
     except Exception as e:
+        _CONFIG_LOAD_ERROR = f"{type(e).__name__}: {e}"
         print(f"[main:load_config] {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         return dict(_DEFAULT_CONFIG)
+
+
+def config_load_status() -> dict:
+    """Reported by /api/healthz so misconfigurations are obvious."""
+    return {"config_path": _CONFIG_PATH_USED,
+            "config_error": _CONFIG_LOAD_ERROR or None}
 
 
 def setup_logging(config: dict) -> None:
@@ -121,6 +151,18 @@ examples:
                    help="Override web UI port from config")
     p.add_argument("--host",
                    help="Override web UI bind host from config")
+    p.add_argument("--scenario",
+                   help="Load a YAML scenario file (requires --mock)")
+    p.add_argument("--max-actions", type=int,
+                   help="Cap total input actions; further actions return BudgetExceeded")
+    p.add_argument("--max-screenshots", type=int,
+                   help="Cap total screenshot captures")
+    p.add_argument("--max-vlm-tokens", type=int,
+                   help="Cap total VLM tokens")
+    p.add_argument("--max-session-seconds", type=int,
+                   help="Cap session wall-clock seconds")
+    p.add_argument("--actions-per-minute", type=int,
+                   help="Sliding-window actions per minute limit")
     return p
 
 
@@ -165,6 +207,54 @@ def main() -> None:
 
     adapter_type = "MOCK" if observer.is_mock else "LIVE"
     logger.info(f"[main] Observer ready (adapter: {adapter_type})")
+
+    # ── Scenario (mock-only) ────────────────────────────────────────────────
+    if args.scenario:
+        if not observer.is_mock:
+            print("[main] --scenario requires --mock; ignoring", file=sys.stderr)
+        else:
+            try:
+                import scenarios as _scn
+                sc = _scn.load(args.scenario)
+                _scn.attach_to_observer(sc, observer)
+                logger.info(f"[main] Scenario loaded: {sc.name} (state={sc.current_state})")
+            except Exception as e:
+                print(f"[main] Failed to load scenario: {e}", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                sys.exit(1)
+
+    # ── Budget configuration (P5) ───────────────────────────────────────────
+    try:
+        from budgets import BudgetStore
+        from session import get_session
+        bs = BudgetStore.from_args(args)
+        if bs is not None:
+            get_session().budgets = bs
+            logger.info(f"[main] Budgets configured: {bs.summary()}")
+    except Exception as e:
+        logger.warning(f"[main] Budget setup skipped: {e}")
+
+    # ── Redaction (P5) ──────────────────────────────────────────────────────
+    try:
+        from redaction import Redactor
+        from session import get_session as _gs
+        red = Redactor(config)
+        if red.is_active():
+            _gs().redactor = red
+            logger.info(f"[main] Redaction active: {red.status()}")
+    except Exception as e:
+        logger.warning(f"[main] Redaction setup skipped: {e}")
+
+    # ── Audit log (P5) ──────────────────────────────────────────────────────
+    try:
+        from audit import AuditLogger
+        from session import get_session as _gs2
+        au = AuditLogger.from_config(config)
+        if au is not None:
+            _gs2().auditor = au
+            logger.info(f"[main] Audit log → {au.path}")
+    except Exception as e:
+        logger.warning(f"[main] Audit setup skipped: {e}")
 
     # ── Web inspector ────────────────────────────────────────────────────────
     if args.mode in ("inspect", "both"):

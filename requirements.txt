@@ -14,7 +14,12 @@ mss>=9.0.0
 Pillow>=10.0.0
 anthropic>=0.40.0
 
-# OCR (optional but recommended)
+# OCR (optional but recommended) — also install the Tesseract binary itself:
+#   Windows: https://github.com/tesseract-ocr/tesseract/releases  +  in
+#            config.json set ocr.tesseract_cmd to its full path; backslashes
+#            inside JSON strings must be escaped (use "\\" or forward slashes).
+#   macOS:   brew install tesseract
+#   Linux:   sudo apt install tesseract-ocr
 pytesseract>=0.3.10
 
 # Input automation / actions (all platforms)
@@ -25,5 +30,11 @@ pywinauto>=0.6.8; sys_platform == "win32"
 pywin32>=306; sys_platform == "win32"
 psutil>=5.9.0; sys_platform == "win32"
 
-# Development / testing
-# No additional test dependencies needed; use --mock flag
+# Scenario DSL (mock-mode scripted state machines)
+PyYAML>=6.0
+
+# Optional accessibility-tree adapters (auto-detected at runtime)
+# macOS:  pyobjc-core, pyobjc-framework-Cocoa, pyobjc-framework-Quartz
+# Linux:  python3-atspi (system package; or `pip install pyatspi` where available)
+
+# Development / testing — see requirements-dev.txt

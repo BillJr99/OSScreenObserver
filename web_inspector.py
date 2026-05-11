@@ -26,6 +26,8 @@ from flask_cors import CORS
 from ascii_renderer import ASCIIRenderer
 from description import DescriptionGenerator
 from observer import ScreenObserver
+import tools as _tools
+from errors import http_status_for
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +340,193 @@ details > summary::-webkit-details-marker { display: none; }
             </div>
             <div class="action-result" id="bring-result-actions"></div>
           </div>
+
+          <!-- ── Element-targeted actions (P1 + P6) ───────────────────────── -->
+          <div class="action-group">
+            <h3>ELEMENT TARGET</h3>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px">
+              Used by every action below.  Selector grammar: Window/Pane/Button[name="OK"].
+              window_uid auto-fills from the sidebar selection.
+            </div>
+            <div class="action-row">
+              <div class="field" style="flex:1"><label>SELECTOR</label><input type="text" id="el-selector" placeholder='Window/MenuBar/MenuItem[name="Edit"]' style="width:360px"/></div>
+              <div class="field"><label>OR ELEMENT_ID</label><input type="text" id="el-id" placeholder="root.0.1"/></div>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <button class="action-btn" onclick="doFindElement()">FIND</button>
+              <button class="action-btn" onclick="doElement('click_element', '/api/element/click', {button: document.getElementById('el-button').value, count: parseInt(document.getElementById('el-count').value)||1})">CLICK</button>
+              <button class="action-btn" onclick="doElement('focus_element', '/api/element/focus', {})">FOCUS</button>
+              <button class="action-btn" onclick="doElement('invoke_element', '/api/element/invoke', {})">INVOKE</button>
+              <button class="action-btn" onclick="doElement('right_click_element', '/api/element/right_click', {})">R-CLICK</button>
+              <button class="action-btn" onclick="doElement('double_click_element', '/api/element/double_click', {})">DBL-CLICK</button>
+              <button class="action-btn" onclick="doElement('hover_element', '/api/hover', {hover_ms: parseInt(document.getElementById('el-hover-ms').value)||250})">HOVER</button>
+              <button class="action-btn" onclick="doElement('clear_text', '/api/element/clear_text', {})">CLEAR</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>BUTTON</label>
+                <select id="el-button" style="background:var(--panel);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:11px;padding:5px 8px;">
+                  <option>left</option><option>right</option><option>middle</option>
+                </select>
+              </div>
+              <div class="field"><label>COUNT</label><input type="number" id="el-count" class="small" value="1"/></div>
+              <div class="field"><label>HOVER MS</label><input type="number" id="el-hover-ms" class="small" value="250"/></div>
+            </div>
+            <div class="action-row" style="margin-top:10px">
+              <div class="field" style="flex:1"><label>SET VALUE</label><input type="text" id="el-value" placeholder="text to set"/></div>
+              <div class="field" style="flex-direction:row;align-items:center;gap:6px;margin-bottom:1px;">
+                <input type="checkbox" id="el-clear-first" checked style="accent-color:var(--cyan)"/>
+                <label style="text-transform:none;font-size:11px;cursor:pointer;" for="el-clear-first">clear_first</label>
+              </div>
+              <button class="action-btn" onclick="doElement('set_value', '/api/element/set_value', {value: document.getElementById('el-value').value, clear_first: document.getElementById('el-clear-first').checked})">SET VALUE</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>OPTION NAME</label><input type="text" id="el-opt-name" placeholder="e.g. Yes"/></div>
+              <div class="field"><label>OPTION INDEX</label><input type="number" id="el-opt-index" class="small" placeholder=""/></div>
+              <button class="action-btn" onclick="doSelectOption()">SELECT OPTION</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>KEYS INTO EL</label><input type="text" id="el-keys" placeholder="enter, ctrl+s, …"/></div>
+              <button class="action-btn" onclick="doElement('key_into_element', '/api/element/key', {keys: document.getElementById('el-keys').value})">KEY INTO</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field" style="flex-direction:row;align-items:center;gap:6px;margin-bottom:1px;">
+                <input type="checkbox" id="el-dry-run" style="accent-color:var(--cyan)"/>
+                <label style="text-transform:none;font-size:11px;cursor:pointer;" for="el-dry-run">dry_run</label>
+              </div>
+              <div class="field"><label>CONFIRM TOKEN</label><input type="text" id="el-confirm" placeholder="ct:…"/></div>
+              <button class="action-btn" onclick="doPropose()">PROPOSE ACTION</button>
+            </div>
+            <div class="action-result" id="el-result"></div>
+          </div>
+
+          <!-- ── Coordinate-level extras (P6) ──────────────────────────────── -->
+          <div class="action-group">
+            <h3>HOVER AT / DRAG (raw coords)</h3>
+            <div class="action-row">
+              <div class="field"><label>X</label><input type="number" id="hover-x" class="small"/></div>
+              <div class="field"><label>Y</label><input type="number" id="hover-y" class="small"/></div>
+              <div class="field"><label>MS</label><input type="number" id="hover-ms" class="small" value="250"/></div>
+              <button class="action-btn" onclick="doHoverAt()">HOVER AT</button>
+            </div>
+            <div class="action-row" style="margin-top:10px">
+              <div class="field"><label>FROM</label><input type="text" id="drag-from" placeholder='{"x":100,"y":200} or {"selector":"..."}'/></div>
+              <div class="field"><label>TO</label><input type="text" id="drag-to" placeholder='{"x":300,"y":400}'/></div>
+              <div class="field"><label>MODIFIERS</label><input type="text" id="drag-mods" placeholder="shift,ctrl"/></div>
+              <button class="action-btn" onclick="doDrag()">DRAG</button>
+            </div>
+            <div class="action-result" id="motion-result"></div>
+          </div>
+
+          <!-- ── Sync & observation (P2) ───────────────────────────────────── -->
+          <div class="action-group">
+            <h3>WAIT / OBSERVE</h3>
+            <div class="action-row">
+              <div class="field" style="flex:1"><label>any_of (JSON array)</label><input type="text" id="waitfor-any" placeholder='[{"type":"window_appears","title_regex":"Confirm"}]' style="width:400px"/></div>
+              <div class="field"><label>TIMEOUT MS</label><input type="number" id="waitfor-timeout" class="small" value="5000"/></div>
+              <div class="field"><label>POLL MS</label><input type="number" id="waitfor-poll" class="small" value="200"/></div>
+              <button class="action-btn" onclick="doWaitFor()">WAIT FOR</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>QUIET MS</label><input type="number" id="waitidle-quiet" class="small" value="750"/></div>
+              <div class="field"><label>TIMEOUT MS</label><input type="number" id="waitidle-timeout" class="small" value="5000"/></div>
+              <button class="action-btn" onclick="doWaitIdle()">WAIT IDLE</button>
+              <button class="action-btn" onclick="doObserve(false)">OBSERVE</button>
+              <button class="action-btn" onclick="doObserve(true)">OBSERVE DIFF</button>
+            </div>
+            <div class="action-result" id="wait-result"></div>
+          </div>
+
+          <!-- ── Snapshots (P2) ────────────────────────────────────────────── -->
+          <div class="action-group">
+            <h3>SNAPSHOTS</h3>
+            <div class="action-row">
+              <button class="action-btn" onclick="doSnapshotNew()">NEW SNAPSHOT</button>
+              <div class="field"><label>SNAPSHOT_ID</label><input type="text" id="snap-id" placeholder="snap:…"/></div>
+              <button class="action-btn" onclick="doSnapshotGet()">GET</button>
+              <button class="action-btn" onclick="doSnapshotDrop()">DROP</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>A</label><input type="text" id="snap-a" placeholder="snap:…"/></div>
+              <div class="field"><label>B</label><input type="text" id="snap-b" placeholder="snap:…"/></div>
+              <div class="field"><label>FORMAT</label>
+                <select id="snap-format" style="background:var(--panel);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:11px;padding:5px 8px;">
+                  <option>custom</option><option>json-patch</option>
+                </select>
+              </div>
+              <button class="action-btn" onclick="doSnapshotDiff()">DIFF</button>
+            </div>
+            <div class="action-result" id="snap-result"></div>
+          </div>
+
+          <!-- ── Tracing & replay (P4) ─────────────────────────────────────── -->
+          <div class="action-group">
+            <h3>TRACING / REPLAY / SCENARIOS</h3>
+            <div class="action-row">
+              <div class="field"><label>LABEL</label><input type="text" id="trace-label" placeholder="run-1"/></div>
+              <button class="action-btn" onclick="doTrace('/api/trace/start', {label: document.getElementById('trace-label').value})">TRACE START</button>
+              <button class="action-btn" onclick="doTrace('/api/trace/stop', {})">TRACE STOP</button>
+              <button class="action-btn" onclick="doTraceGet('/api/trace/status')">TRACE STATUS</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field" style="flex:1"><label>REPLAY PATH</label><input type="text" id="replay-path" placeholder="traces/trace-…/trace.jsonl"/></div>
+              <div class="field"><label>MODE</label>
+                <select id="replay-mode" style="background:var(--panel);border:1px solid var(--border2);color:var(--text);font-family:var(--mono);font-size:11px;padding:5px 8px;">
+                  <option>execute</option><option>verify</option>
+                </select>
+              </div>
+              <button class="action-btn" onclick="doReplayStart()">REPLAY START</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field"><label>REPLAY ID</label><input type="text" id="replay-id" placeholder="rep:…"/></div>
+              <button class="action-btn" onclick="doReplay('/api/replay/step')">STEP</button>
+              <button class="action-btn" onclick="doReplay('/api/replay/status')">STATUS</button>
+              <button class="action-btn" onclick="doReplay('/api/replay/stop')">STOP</button>
+            </div>
+            <div class="action-row" style="margin-top:8px">
+              <div class="field" style="flex:1"><label>SCENARIO YAML</label><input type="text" id="scn-path" placeholder="scenarios_examples/login.yaml"/></div>
+              <button class="action-btn" onclick="doScenarioLoad()">LOAD SCENARIO</button>
+            </div>
+            <div class="action-result" id="trace-result"></div>
+          </div>
+
+          <!-- ── Oracles (P4) ─────────────────────────────────────────────── -->
+          <div class="action-group">
+            <h3>ASSERT STATE</h3>
+            <div class="action-row">
+              <div class="field" style="flex:1"><label>PREDICATE (JSON list)</label><input type="text" id="assert-pred" placeholder='[{"kind":"text_visible","regex":"Saved"}]' style="width:500px"/></div>
+              <button class="action-btn" onclick="doAssertState()">ASSERT</button>
+            </div>
+            <div class="action-result" id="assert-result"></div>
+          </div>
+
+          <!-- ── Safety / discovery (P5 + P6) ──────────────────────────────── -->
+          <div class="action-group">
+            <h3>STATUS / DISCOVERY</h3>
+            <div class="action-row">
+              <button class="action-btn" onclick="doGetJSON('/api/capabilities','status-result')">CAPABILITIES</button>
+              <button class="action-btn" onclick="doGetJSON('/api/monitors','status-result')">MONITORS</button>
+              <button class="action-btn" onclick="doGetJSON('/api/budget_status','status-result')">BUDGET</button>
+              <button class="action-btn" onclick="doGetJSON('/api/redaction_status','status-result')">REDACTION</button>
+              <button class="action-btn" onclick="doGetJSON('/api/healthz','status-result')">HEALTHZ</button>
+              <button class="action-btn" onclick="doMetrics()">METRICS</button>
+            </div>
+            <div class="action-result" id="status-result"></div>
+          </div>
+
+          <!-- ── Generic tool console (covers every REGISTRY entry) ────────── -->
+          <div class="action-group">
+            <h3>RAW TOOL CALL</h3>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-bottom:8px">
+              Drives any registered tool by name with a JSON args body via /api/tool/&lt;name&gt;.
+            </div>
+            <div class="action-row">
+              <div class="field"><label>TOOL NAME</label><input type="text" id="raw-tool" placeholder="get_window_structure" list="raw-tools"/></div>
+              <datalist id="raw-tools"></datalist>
+              <div class="field" style="flex:1"><label>ARGS (JSON)</label><input type="text" id="raw-args" placeholder='{"window_index": 0}' style="width:400px"/></div>
+              <button class="action-btn" onclick="doRawTool()">RUN</button>
+            </div>
+            <div class="action-result" id="raw-result"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -532,11 +721,10 @@ async function loadFullDisplay() {
     if (data.error) { if (container) container.innerHTML = `<pre style="color:var(--red)">${esc(data.error)}</pre>`; setStatus('ERROR'); return; }
     const dimMeta = data.width ? ` · ${data.width}×${data.height}px` : '';
     let html = `<span class="shot-meta" style="margin-top:8px;display:block">ALL MONITORS${dimMeta}</span>
-      <img src="data:image/png;base64,${data.data}" alt="full display screenshot" style="max-width:100%"/>`;
-    if (data.sketch) {
-      html += `<div class="desc-label" style="margin-top:14px">ASCII SKETCH (selected window)</div>`;
-      html += `<pre style="font-size:10px;line-height:1.3;color:var(--text-hi);background:var(--surface);border:1px solid var(--border);padding:12px 16px;overflow-x:auto">${esc(data.sketch)}</pre>`;
-    }
+      <img src="data:image/png;base64,${data.data}" alt="full display screenshot" style="max-width:100%"/>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--text-dim);margin-top:6px">
+        SKETCH IS RENDERED ON THE SKETCH TAB.
+      </div>`;
     if (container) container.innerHTML = html;
     setStatus('READY');
   } catch(e) {
@@ -586,6 +774,233 @@ function doType() {
 function doKey() {
   const keys = document.getElementById('key-combo').value;
   postAction({action:'key', value: keys}, 'key-result');
+}
+
+// ── P1-P6: element targeting + harness controls ──────────────────────────────
+function _elementBody(extra) {
+  const body = Object.assign({}, extra || {});
+  const sel = (document.getElementById('el-selector').value || '').trim();
+  const eid = (document.getElementById('el-id').value || '').trim();
+  if (sel) body.selector = sel;
+  if (eid) body.element_id = eid;
+  if (selectedIndex !== null) body.window_index = selectedIndex;
+  if (document.getElementById('el-dry-run').checked) body.dry_run = true;
+  const ct = (document.getElementById('el-confirm').value || '').trim();
+  if (ct) body.confirm_token = ct;
+  return body;
+}
+
+function _showResult(id, data) {
+  const el = document.getElementById(id);
+  el.classList.remove('visible', 'error');
+  el.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  el.classList.add('visible');
+  if (data && data.ok === false) el.classList.add('error');
+}
+
+async function _postJSON(path, body, resultId) {
+  setStatus('CALLING ' + path);
+  try {
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body || {})
+    });
+    const data = await r.json();
+    _showResult(resultId, data);
+    setStatus(data.ok === false ? (data.error && data.error.code) || 'ERROR' : 'OK');
+    return data;
+  } catch (e) {
+    _showResult(resultId, String(e));
+    setStatus('ERROR');
+  }
+}
+
+async function _getJSON(path, resultId) {
+  setStatus('CALLING ' + path);
+  try {
+    const r = await fetch(path);
+    const data = await r.json();
+    _showResult(resultId, data);
+    setStatus(data.ok === false ? (data.error && data.error.code) || 'ERROR' : 'OK');
+    return data;
+  } catch (e) {
+    _showResult(resultId, String(e));
+    setStatus('ERROR');
+  }
+}
+
+async function doFindElement() {
+  const sel = (document.getElementById('el-selector').value || '').trim();
+  if (!sel) { _showResult('el-result', 'enter a selector first'); return; }
+  const q = new URLSearchParams({selector: sel});
+  if (selectedIndex !== null) q.set('window_index', selectedIndex);
+  await _getJSON(`/api/find_element?${q.toString()}`, 'el-result');
+}
+
+async function doElement(tool, path, extra) {
+  await _postJSON(path, _elementBody(extra), 'el-result');
+}
+
+async function doSelectOption() {
+  const opt_name  = (document.getElementById('el-opt-name').value || '').trim();
+  const opt_idx_s = (document.getElementById('el-opt-index').value || '').trim();
+  const extra = {};
+  if (opt_name) extra.option_name = opt_name;
+  if (opt_idx_s !== '') extra.option_index = parseInt(opt_idx_s);
+  await _postJSON('/api/element/select', _elementBody(extra), 'el-result');
+}
+
+async function doPropose() {
+  // Propose the element-targeted action currently configured.
+  const body = {
+    action: 'click_element',
+    args: _elementBody({})
+  };
+  delete body.args.dry_run; delete body.args.confirm_token;
+  const data = await _postJSON('/api/propose_action', body, 'el-result');
+  if (data && data.confirm_token) {
+    document.getElementById('el-confirm').value = data.confirm_token;
+  }
+}
+
+async function doHoverAt() {
+  const x = parseInt(document.getElementById('hover-x').value) || 0;
+  const y = parseInt(document.getElementById('hover-y').value) || 0;
+  const hover_ms = parseInt(document.getElementById('hover-ms').value) || 250;
+  await _postJSON('/api/hover', {x, y, hover_ms}, 'motion-result');
+}
+
+async function doDrag() {
+  let from, to;
+  try { from = JSON.parse(document.getElementById('drag-from').value); }
+  catch (e) { _showResult('motion-result', 'from must be JSON: ' + e); return; }
+  try { to   = JSON.parse(document.getElementById('drag-to').value); }
+  catch (e) { _showResult('motion-result', 'to must be JSON: ' + e); return; }
+  const modsRaw = (document.getElementById('drag-mods').value || '').trim();
+  const modifiers = modsRaw ? modsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const body = {from, to, modifiers};
+  if (selectedIndex !== null) body.window_index = selectedIndex;
+  await _postJSON('/api/drag', body, 'motion-result');
+}
+
+async function doWaitFor() {
+  let any_of;
+  try { any_of = JSON.parse(document.getElementById('waitfor-any').value); }
+  catch (e) { _showResult('wait-result', 'any_of must be JSON: ' + e); return; }
+  const body = {
+    any_of,
+    timeout_ms: parseInt(document.getElementById('waitfor-timeout').value) || 5000,
+    poll_ms:    parseInt(document.getElementById('waitfor-poll').value)    || 200,
+  };
+  await _postJSON('/api/wait_for', body, 'wait-result');
+}
+
+async function doWaitIdle() {
+  const body = {
+    quiet_ms:   parseInt(document.getElementById('waitidle-quiet').value)   || 750,
+    timeout_ms: parseInt(document.getElementById('waitidle-timeout').value) || 5000,
+  };
+  if (selectedIndex !== null) body.window_index = selectedIndex;
+  await _postJSON('/api/wait_idle', body, 'wait-result');
+}
+
+let _lastObserveToken = null;
+async function doObserve(useDiff) {
+  const q = new URLSearchParams();
+  if (selectedIndex !== null) q.set('window_index', selectedIndex);
+  if (useDiff && _lastObserveToken) q.set('since', _lastObserveToken);
+  const data = await _getJSON(`/api/observe?${q.toString()}`, 'wait-result');
+  if (data && data.tree_token) _lastObserveToken = data.tree_token;
+}
+
+async function doSnapshotNew() {
+  const data = await _postJSON('/api/snapshot', {}, 'snap-result');
+  if (data && data.snapshot_id) document.getElementById('snap-id').value = data.snapshot_id;
+}
+async function doSnapshotGet() {
+  const sid = document.getElementById('snap-id').value.trim();
+  if (!sid) { _showResult('snap-result', 'enter snapshot_id'); return; }
+  await _getJSON(`/api/snapshot/${encodeURIComponent(sid)}`, 'snap-result');
+}
+async function doSnapshotDrop() {
+  const sid = document.getElementById('snap-id').value.trim();
+  if (!sid) { _showResult('snap-result', 'enter snapshot_id'); return; }
+  setStatus('DROPPING …');
+  const r = await fetch(`/api/snapshot/${encodeURIComponent(sid)}`, {method: 'DELETE'});
+  _showResult('snap-result', await r.json());
+  setStatus('OK');
+}
+async function doSnapshotDiff() {
+  const a = document.getElementById('snap-a').value.trim();
+  const b = document.getElementById('snap-b').value.trim();
+  const format = document.getElementById('snap-format').value;
+  await _postJSON('/api/snapshot/diff', {a, b, format}, 'snap-result');
+}
+
+async function doTrace(path, body) { await _postJSON(path, body, 'trace-result'); }
+async function doTraceGet(path)    { await _getJSON(path, 'trace-result'); }
+async function doReplayStart() {
+  const body = {
+    path: document.getElementById('replay-path').value.trim(),
+    mode: document.getElementById('replay-mode').value,
+  };
+  const data = await _postJSON('/api/replay/start', body, 'trace-result');
+  if (data && data.replay_id) document.getElementById('replay-id').value = data.replay_id;
+}
+async function doReplay(path) {
+  const rid = document.getElementById('replay-id').value.trim();
+  if (!rid) { _showResult('trace-result', 'enter replay_id'); return; }
+  await _postJSON(path, {replay_id: rid}, 'trace-result');
+}
+async function doScenarioLoad() {
+  const path = document.getElementById('scn-path').value.trim();
+  await _postJSON('/api/scenario/load', {path}, 'trace-result');
+}
+
+async function doAssertState() {
+  let predicate;
+  try { predicate = JSON.parse(document.getElementById('assert-pred').value); }
+  catch (e) { _showResult('assert-result', 'predicate must be JSON: ' + e); return; }
+  await _postJSON('/api/assert_state', {predicate}, 'assert-result');
+}
+
+async function doGetJSON(path, resultId) { await _getJSON(path, resultId); }
+async function doMetrics() {
+  setStatus('CALLING /api/metrics');
+  try {
+    const r = await fetch('/api/metrics');
+    _showResult('status-result', await r.text());
+    setStatus('OK');
+  } catch (e) {
+    _showResult('status-result', String(e));
+    setStatus('ERROR');
+  }
+}
+
+async function doRawTool() {
+  const tool = document.getElementById('raw-tool').value.trim();
+  if (!tool) { _showResult('raw-result', 'enter a tool name'); return; }
+  let args = {};
+  const raw = document.getElementById('raw-args').value.trim();
+  if (raw) {
+    try { args = JSON.parse(raw); }
+    catch (e) { _showResult('raw-result', 'args must be JSON: ' + e); return; }
+  }
+  await _postJSON(`/api/tool/${encodeURIComponent(tool)}`, args, 'raw-result');
+}
+
+// Populate the tool datalist once windows have loaded.
+async function _populateToolList() {
+  try {
+    const r = await fetch('/api/tools');
+    if (!r.ok) return;
+    const data = await r.json();
+    const list = document.getElementById('raw-tools');
+    if (list && Array.isArray(data.tools)) {
+      list.innerHTML = data.tools.map(n => `<option value="${esc(n)}"></option>`).join('');
+    }
+  } catch (e) {}
 }
 
 async function doBringToForeground(resultId) {
@@ -661,6 +1076,7 @@ function truncate(s, n) { return s.length > n ? s.slice(0, n-1) + '…' : s; }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 loadWindows(true);
+_populateToolList();
 </script>
 </body>
 </html>"""
@@ -685,6 +1101,27 @@ def create_web_app(
     app = Flask(__name__)
     CORS(app)
 
+    ctx = _tools.ToolContext(observer=observer, renderer=renderer,
+                              describer=describer, config=config)
+
+    def _tool_response(name: str, args: dict):
+        result = _tools.dispatch(ctx, name, args)
+        if not result.get("ok", True):
+            code = (result.get("error") or {}).get("code", "Internal")
+            return jsonify(result), http_status_for(code)
+        return jsonify(result)
+
+    def _merge_query(extra: Optional[dict] = None) -> dict:
+        out = {k: v for k, v in request.args.items()}
+        if "window_index" in out:
+            try:
+                out["window_index"] = int(out["window_index"])
+            except (TypeError, ValueError):
+                pass
+        if extra:
+            out.update(extra)
+        return out
+
     # ── UI ────────────────────────────────────────────────────────────────────
 
     @app.route("/")
@@ -706,67 +1143,40 @@ def create_web_app(
 
     @app.route("/api/windows")
     def api_windows():
-        try:
-            windows = observer.list_windows()
-            return jsonify({
-                "is_mock": observer.is_mock,
-                "count":   len(windows),
-                "windows": [{"index": i, **w.to_dict()} for i, w in enumerate(windows)],
-            })
-        except Exception as e:
-            print(f"[web_inspector:/api/windows] {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+        return _tool_response("list_windows", {})
 
     # ── /api/structure ────────────────────────────────────────────────────────
 
     @app.route("/api/structure")
     def api_structure():
-        try:
-            info, hwnd, _ = _window_from_args()
-            tree = observer.get_element_tree(hwnd)
-            if tree is None:
-                return jsonify({"error": "Could not retrieve element tree"}), 500
-            return jsonify({
-                "window":        info.title if info else "(focused)",
-                "element_count": len(tree.flat_list()),
-                "tree":          tree.to_dict(),
-            })
-        except Exception as e:
-            print(f"[web_inspector:/api/structure] {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+        # Forwards through tools.dispatch so callers can use roles=,
+        # name_regex=, prune_empty=, max_nodes=, page_cursor= filters.
+        args = _merge_query()
+        for key in ("roles", "exclude_roles"):
+            if key in args and isinstance(args[key], str):
+                args[key] = [s for s in args[key].split(",") if s]
+        for bool_key in ("visible_only", "prune_empty"):
+            if bool_key in args:
+                args[bool_key] = str(args[bool_key]).lower() in ("1", "true", "yes")
+        for int_key in ("max_text_len", "max_nodes"):
+            if int_key in args:
+                try:
+                    args[int_key] = int(args[int_key])
+                except (TypeError, ValueError):
+                    args.pop(int_key, None)
+        return _tool_response("get_window_structure", args)
 
     # ── /api/description ──────────────────────────────────────────────────────
 
     @app.route("/api/description")
     def api_description():
-        try:
-            info, hwnd, _ = _window_from_args()
-            mode = request.args.get("mode", "accessibility")
-            tree = observer.get_element_tree(hwnd)
-            if tree is None:
-                return jsonify({"error": "Could not retrieve element tree"}), 500
-            shot = observer.get_screenshot(hwnd)
-
-            if mode == "accessibility":
-                return jsonify({"mode": mode, "description": describer.from_tree(tree, info)})
-            elif mode == "ocr":
-                if shot is None:
-                    return jsonify({"error": "Screenshot unavailable for OCR"}), 500
-                return jsonify({"mode": mode, "description": describer.from_ocr(shot)})
-            elif mode == "vlm":
-                if shot is None:
-                    return jsonify({"error": "Screenshot unavailable for VLM"}), 500
-                return jsonify({"mode": mode, "description": describer.from_vlm(shot)})
-            elif mode == "combined":
-                return jsonify({"mode": mode, **describer.combined(tree, shot, info)})
-            else:
-                return jsonify({"error": f"Unknown mode: {mode}"}), 400
-        except Exception as e:
-            print(f"[web_inspector:/api/description] {e}")
-            traceback.print_exc()
-            return jsonify({"error": str(e)}), 500
+        args = _merge_query()
+        if "max_tokens" in args:
+            try:
+                args["max_tokens"] = int(args["max_tokens"])
+            except (TypeError, ValueError):
+                args.pop("max_tokens", None)
+        return _tool_response("get_screen_description", args)
 
     # ── /api/sketch ───────────────────────────────────────────────────────────
 
@@ -944,30 +1354,257 @@ def create_web_app(
 
     @app.route("/api/action", methods=["POST"])
     def api_action():
+        body = request.get_json(force=True) or {}
+        action = body.get("action", "")
+        if action == "click_at":
+            return _tool_response("click_at", {
+                "x": body.get("x", 0), "y": body.get("y", 0),
+                "button": body.get("button", "left"),
+                "double": body.get("double", False),
+            })
+        if action == "type":
+            return _tool_response("type_text", {"text": body.get("value", "")})
+        if action == "key":
+            return _tool_response("press_key", {"keys": body.get("value", "")})
+        if action == "scroll":
+            return _tool_response("scroll", body)
+        return jsonify({"success": False, "ok": False,
+                        "error": f"Unknown action: {action}"}), 400
+
+    # ── P1: identity, capabilities, element-targeted actions ─────────────────
+
+    @app.route("/api/capabilities")
+    def api_capabilities():
+        return _tool_response("get_capabilities", {})
+
+    @app.route("/api/monitors")
+    def api_monitors():
+        return _tool_response("get_monitors", {})
+
+    @app.route("/api/find_element")
+    def api_find_element():
+        return _tool_response("find_element", _merge_query())
+
+    @app.route("/api/element/click", methods=["POST"])
+    def api_element_click():
+        return _tool_response("click_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/focus", methods=["POST"])
+    def api_element_focus():
+        return _tool_response("focus_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/set_value", methods=["POST"])
+    def api_element_set_value():
+        return _tool_response("set_value", request.get_json(force=True) or {})
+
+    @app.route("/api/element/invoke", methods=["POST"])
+    def api_element_invoke():
+        return _tool_response("invoke_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/select", methods=["POST"])
+    def api_element_select():
+        return _tool_response("select_option", request.get_json(force=True) or {})
+
+    # ── P2: observe-with-diff, snapshots, wait_for ──────────────────────────
+
+    @app.route("/api/observe")
+    def api_observe():
+        return _tool_response("observe_window", _merge_query())
+
+    @app.route("/api/snapshot", methods=["POST"])
+    def api_snapshot():
+        return _tool_response("snapshot", request.get_json(silent=True) or {})
+
+    @app.route("/api/snapshot/<sid>")
+    def api_snapshot_get(sid: str):
+        return _tool_response("snapshot_get", {"snapshot_id": sid})
+
+    @app.route("/api/snapshot/diff", methods=["POST"])
+    def api_snapshot_diff():
+        return _tool_response("snapshot_diff", request.get_json(force=True) or {})
+
+    @app.route("/api/snapshot/<sid>", methods=["DELETE"])
+    def api_snapshot_drop(sid: str):
+        return _tool_response("snapshot_drop", {"snapshot_id": sid})
+
+    @app.route("/api/wait_for", methods=["POST"])
+    def api_wait_for():
+        return _tool_response("wait_for", request.get_json(force=True) or {})
+
+    @app.route("/api/wait_idle", methods=["POST"])
+    def api_wait_idle():
+        return _tool_response("wait_idle", request.get_json(force=True) or {})
+
+    @app.route("/api/element/click_and_observe", methods=["POST"])
+    def api_element_click_observe():
+        return _tool_response("click_element_and_observe",
+                               request.get_json(force=True) or {})
+
+    @app.route("/api/type_and_observe", methods=["POST"])
+    def api_type_observe():
+        return _tool_response("type_and_observe", request.get_json(force=True) or {})
+
+    @app.route("/api/key_and_observe", methods=["POST"])
+    def api_key_observe():
+        return _tool_response("press_key_and_observe", request.get_json(force=True) or {})
+
+    # ── P3: filtering, cropping, region OCR, budgeted description ───────────
+
+    @app.route("/api/screenshot/cropped")
+    def api_screenshot_cropped():
+        return _tool_response("get_screenshot_cropped", _merge_query())
+
+    @app.route("/api/ocr")
+    def api_ocr():
+        return _tool_response("get_ocr", _merge_query())
+
+    # ── P4: tracing, replay, scenarios, oracles ─────────────────────────────
+
+    @app.route("/api/trace/start", methods=["POST"])
+    def api_trace_start():
+        return _tool_response("trace_start", request.get_json(silent=True) or {})
+
+    @app.route("/api/trace/stop", methods=["POST"])
+    def api_trace_stop():
+        return _tool_response("trace_stop", {})
+
+    @app.route("/api/trace/status")
+    def api_trace_status():
+        return _tool_response("trace_status", {})
+
+    @app.route("/api/replay/start", methods=["POST"])
+    def api_replay_start():
+        return _tool_response("replay_start", request.get_json(force=True) or {})
+
+    @app.route("/api/replay/step", methods=["POST"])
+    def api_replay_step():
+        return _tool_response("replay_step", request.get_json(force=True) or {})
+
+    @app.route("/api/replay/status", methods=["POST"])
+    def api_replay_status():
+        return _tool_response("replay_status", request.get_json(force=True) or {})
+
+    @app.route("/api/replay/stop", methods=["POST"])
+    def api_replay_stop():
+        return _tool_response("replay_stop", request.get_json(force=True) or {})
+
+    @app.route("/api/scenario/load", methods=["POST"])
+    def api_scenario_load():
+        return _tool_response("load_scenario", request.get_json(force=True) or {})
+
+    @app.route("/api/assert_state", methods=["POST"])
+    def api_assert_state():
+        return _tool_response("assert_state", request.get_json(force=True) or {})
+
+    # ── P5: budgets / redaction status / propose ────────────────────────────
+
+    @app.route("/api/budget_status")
+    def api_budget_status():
+        return _tool_response("get_budget_status", {})
+
+    @app.route("/api/redaction_status")
+    def api_redaction_status():
+        return _tool_response("get_redaction_status", {})
+
+    @app.route("/api/propose_action", methods=["POST"])
+    def api_propose():
+        return _tool_response("propose_action", request.get_json(force=True) or {})
+
+    # ── P6: extra input verbs ────────────────────────────────────────────────
+
+    @app.route("/api/hover", methods=["POST"])
+    def api_hover():
+        body = request.get_json(force=True) or {}
+        if "x" in body and "y" in body and not body.get("selector") and not body.get("element_id"):
+            return _tool_response("hover_at", body)
+        return _tool_response("hover_element", body)
+
+    @app.route("/api/element/right_click", methods=["POST"])
+    def api_right_click():
+        return _tool_response("right_click_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/double_click", methods=["POST"])
+    def api_double_click():
+        return _tool_response("double_click_element", request.get_json(force=True) or {})
+
+    @app.route("/api/drag", methods=["POST"])
+    def api_drag():
+        return _tool_response("drag", request.get_json(force=True) or {})
+
+    @app.route("/api/element/key", methods=["POST"])
+    def api_key_into():
+        return _tool_response("key_into_element", request.get_json(force=True) or {})
+
+    @app.route("/api/element/clear_text", methods=["POST"])
+    def api_clear_text():
+        return _tool_response("clear_text", request.get_json(force=True) or {})
+
+    # ── Telemetry: metrics in Prometheus format ─────────────────────────────
+
+    @app.route("/api/metrics")
+    def api_metrics():
+        from session import get_session
+        s = get_session()
+        lines = [
+            "# HELP oso_step_count Total tool calls processed",
+            "# TYPE oso_step_count counter",
+            f"oso_step_count {s.steps.count}",
+            "# HELP oso_uptime_seconds Process uptime",
+            "# TYPE oso_uptime_seconds gauge",
+            f"oso_uptime_seconds {int(s.steps.uptime_s)}",
+        ]
+        if s.budgets is not None:
+            st = s.budgets.status()
+            lines += [
+                "# TYPE oso_actions_used counter",
+                f"oso_actions_used {st['actions']['used']}",
+                "# TYPE oso_screenshots_used counter",
+                f"oso_screenshots_used {st['screenshots']['used']}",
+            ]
+        if s.active_trace is not None:
+            lines.append("oso_active_trace 1")
+        else:
+            lines.append("oso_active_trace 0")
+        body = "\n".join(lines) + "\n"
+        return body, 200, {"Content-Type": "text/plain; version=0.0.4"}
+
+    # ── Generic tool console ────────────────────────────────────────────────
+
+    @app.route("/api/tools")
+    def api_tools_list():
+        return jsonify({"ok": True,
+                        "tools": sorted(_tools.REGISTRY.keys())})
+
+    @app.route("/api/tool/<name>", methods=["GET", "POST"])
+    def api_tool_run(name: str):
+        if request.method == "POST":
+            args = request.get_json(silent=True) or {}
+        else:
+            args = _merge_query()
+        return _tool_response(name, args)
+
+    @app.route("/api/healthz")
+    def api_healthz():
+        from session import get_session
+        s = get_session()
+        out = {
+            "ok": True,
+            "uptime_s": int(s.steps.uptime_s),
+            "step_count": s.steps.count,
+            "adapter": type(observer._adapter).__name__,
+            "version": (config.get("mcp", {}) or {}).get("version", "0.2.0"),
+        }
+        # Surface common misconfigurations.
         try:
-            body   = request.get_json(force=True) or {}
-            action = body.get("action", "")
-
-            if action == "click_at":
-                result = observer.perform_action(
-                    "click_at",
-                    value={"x": body.get("x", 0), "y": body.get("y", 0),
-                           "button": body.get("button", "left"),
-                           "double": body.get("double", False)},
-                )
-            elif action == "type":
-                result = observer.perform_action("type", value=body.get("value", ""))
-            elif action == "key":
-                result = observer.perform_action("key", value=body.get("value", ""))
-            elif action == "scroll":
-                result = observer.perform_action("scroll", value=body)
-            else:
-                return jsonify({"success": False, "error": f"Unknown action: {action}"}), 400
-
-            return jsonify(result)
-        except Exception as e:
-            print(f"[web_inspector:/api/action] {e}")
-            traceback.print_exc()
-            return jsonify({"success": False, "error": str(e)}), 500
+            from main import config_load_status
+            out.update(config_load_status())
+        except Exception:
+            pass
+        try:
+            from ocr_util import diagnose as _ocr_diag
+            out["ocr"] = _ocr_diag(config)
+        except Exception:
+            pass
+        return jsonify(out)
 
     return app

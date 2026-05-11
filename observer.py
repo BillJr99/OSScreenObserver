@@ -102,16 +102,44 @@ class WindowInfo:
     pid: int
     bounds: Bounds
     is_focused: bool
+    # Stable cross-call identifier; populated by adapters (design doc §6.1).
+    window_uid: str = ""
+    # Optional multi-monitor metadata (design doc §6.3).  Populated when the
+    # adapter knows; left None on adapters that do not.
+    monitor_index: Optional[int] = None
+    scale_factor: Optional[float] = None
+    logical_bounds: Optional[Bounds] = None
+    physical_bounds: Optional[Bounds] = None
 
     def to_dict(self) -> Dict:
-        return {
+        d: Dict[str, Any] = {
             "handle": str(self.handle),
             "title": self.title,
             "process": self.process_name,
             "pid": self.pid,
             "bounds": self.bounds.to_dict(),
             "focused": self.is_focused,
+            "window_uid": self.window_uid,
         }
+        if self.monitor_index is not None:
+            d["monitor_index"] = self.monitor_index
+        if self.scale_factor is not None:
+            d["scale_factor"] = self.scale_factor
+        if self.logical_bounds is not None:
+            d["logical_bounds"] = self.logical_bounds.to_dict()
+        if self.physical_bounds is not None:
+            d["physical_bounds"] = self.physical_bounds.to_dict()
+        return d
+
+
+# ─── Window resolution result ────────────────────────────────────────────────
+
+@dataclass
+class WindowResolution:
+    info: Optional[WindowInfo]
+    warning: Optional[str]
+    used_uid: bool
+    requested_uid: Optional[str]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,20 +149,35 @@ class WindowInfo:
 class MockAdapter:
     """Synthetic data adapter for development and testing."""
 
+    def __init__(self) -> None:
+        import secrets as _s
+        self._nonce = _s.token_hex(4)
+        # Optional scenario hook (design doc §15.5).  Set by main.py when
+        # --scenario is supplied; methods route through the scenario when
+        # active so that input actions can drive state transitions.
+        self.scenario: Optional[Any] = None
+
     def get_windows_above_bounds(self, hwnd) -> List["Bounds"]:
         return []  # Mock assumes the target window is on top
 
     def list_windows(self) -> List[WindowInfo]:
+        if self.scenario is not None:
+            return self.scenario.list_windows(self._nonce)
         return [
             WindowInfo(1001, "Untitled — Notepad", "notepad.exe", 1234,
-                       Bounds(80, 60, 800, 600), True),
+                       Bounds(80, 60, 800, 600), True,
+                       window_uid=f"mock:0:{self._nonce}"),
             WindowInfo(1002, "GitHub · Where software is built — Google Chrome",
-                       "chrome.exe", 5678, Bounds(0, 0, 1920, 1050), False),
+                       "chrome.exe", 5678, Bounds(0, 0, 1920, 1050), False,
+                       window_uid=f"mock:1:{self._nonce}"),
             WindowInfo(1003, "screen_observer.py — Visual Studio Code",
-                       "code.exe", 9012, Bounds(960, 0, 960, 1050), False),
+                       "code.exe", 9012, Bounds(960, 0, 960, 1050), False,
+                       window_uid=f"mock:2:{self._nonce}"),
         ]
 
     def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        if self.scenario is not None:
+            return self.scenario.get_element_tree(hwnd)
         root = UIElement("root", "Untitled — Notepad", "Window",
                          bounds=Bounds(80, 60, 800, 600))
 
@@ -223,6 +266,12 @@ class MockAdapter:
 
     def perform_action(self, action: str, element_id: str = None,
                        value: Any = None, hwnd=None) -> Dict:
+        if self.scenario is not None:
+            handled = self.scenario.handle_action(action=action,
+                                                   element_id=element_id,
+                                                   value=value, hwnd=hwnd)
+            if handled is not None:
+                return handled
         return {
             "success": True,
             "action": action,
@@ -280,6 +329,7 @@ class WindowsAdapter:
                         handle=hwnd, title=title, process_name=proc_name, pid=pid,
                         bounds=Bounds(rect[0], rect[1], w, h),
                         is_focused=(hwnd == fg),
+                        window_uid=f"win:{pid}:{hwnd}",
                     ))
                 except Exception as inner:
                     logger.debug(f"[WindowsAdapter:list_windows:_cb] {inner}")
@@ -511,7 +561,8 @@ class MacOSAdapter:
             r = subprocess.run(["osascript", "-e", script],
                                capture_output=True, text=True, timeout=5)
             apps = [a.strip() for a in r.stdout.split(",") if a.strip()]
-            return [WindowInfo(i, a, a, 0, Bounds(0, 0, 1920, 1080), i == 0)
+            return [WindowInfo(i, a, a, 0, Bounds(0, 0, 1920, 1080), i == 0,
+                               window_uid=f"mac:{i}")
                     for i, a in enumerate(apps)]
         except Exception as e:
             print(f"[MacOSAdapter:list_windows] {e}")
@@ -582,7 +633,8 @@ class LinuxAdapter:
                 x, y, w, h = int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])
                 title = parts[8] if len(parts) > 8 else "(no title)"
                 windows.append(WindowInfo(hwnd, title, title, 0,
-                                          Bounds(x, y, w, h), False))
+                                          Bounds(x, y, w, h), False,
+                                          window_uid=f"x11:{hwnd:x}"))
             return windows
         except Exception as e:
             print(f"[LinuxAdapter:list_windows] {e}")
@@ -639,6 +691,18 @@ class ScreenObserver:
     def __init__(self, config: dict):
         self.config = config
         self._adapter = self._select_adapter()
+        # Try to upgrade stub adapters to real AX implementations.
+        try:
+            if isinstance(self._adapter, MacOSAdapter):
+                import mac_adapter
+                if mac_adapter.install_into(self):
+                    logger.info("[ScreenObserver] mac_adapter installed (pyobjc)")
+            elif isinstance(self._adapter, LinuxAdapter):
+                import linux_adapter
+                if linux_adapter.install_into(self):
+                    logger.info("[ScreenObserver] linux_adapter installed (pyatspi)")
+        except Exception:
+            logger.exception("real adapter upgrade failed")
 
     def _select_adapter(self):
         if self.config.get("mock", False):
@@ -707,6 +771,130 @@ class ScreenObserver:
             return windows[index]
         return None
 
+    def window_by_uid(self, windows: List[WindowInfo],
+                      uid: Optional[str]) -> Optional[WindowInfo]:
+        """Resolve a window by stable uid; returns None if not found."""
+        if not uid or not windows:
+            return None
+        for w in windows:
+            if w.window_uid == uid:
+                return w
+        return None
+
+    def resolve_window(self, windows: List[WindowInfo],
+                       window_uid: Optional[str],
+                       window_index: Optional[int]) -> "WindowResolution":
+        """Apply the design-doc precedence: uid wins; warn when both given."""
+        if window_uid:
+            info = self.window_by_uid(windows, window_uid)
+            warning = ("both window_index and window_uid given; window_uid used"
+                       if window_index is not None else None)
+            return WindowResolution(info=info, warning=warning,
+                                    used_uid=True, requested_uid=window_uid)
+        info = self.window_by_index(windows, window_index)
+        return WindowResolution(info=info, warning=None,
+                                used_uid=False, requested_uid=None)
+
+    # ── Monitors / DPI (design doc §6.3) ──────────────────────────────────────
+
+    def get_monitors(self) -> List[Dict[str, Any]]:
+        """Return per-monitor metadata via mss."""
+        try:
+            import mss
+            with mss.mss() as sct:
+                mons = sct.monitors  # [0] is union; [1..] are individual
+                out: List[Dict[str, Any]] = []
+                for i, m in enumerate(mons[1:]):
+                    out.append({
+                        "index": i,
+                        "primary": (i == 0),
+                        "bounds":  {"x": m["left"], "y": m["top"],
+                                    "width": m["width"], "height": m["height"]},
+                        "scale_factor": 1.0,
+                        "logical_bounds":  {"x": m["left"], "y": m["top"],
+                                            "width": m["width"], "height": m["height"]},
+                        "physical_bounds": {"x": m["left"], "y": m["top"],
+                                            "width": m["width"], "height": m["height"]},
+                    })
+                return out
+        except Exception:
+            return []
+
+    # ── Capability discovery (design doc §6.4) ────────────────────────────────
+
+    def get_capabilities(self) -> Dict[str, Any]:
+        adapter_name = type(self._adapter).__name__
+        is_windows = adapter_name == "WindowsAdapter"
+        is_macos   = adapter_name == "MacOSAdapter"
+        is_linux   = adapter_name == "LinuxAdapter"
+        is_mock    = adapter_name == "MockAdapter"
+
+        # Probe optional libs.
+        def _has(mod: str) -> bool:
+            try:
+                __import__(mod)
+                return True
+            except Exception:
+                return False
+
+        if is_macos:
+            ax_tree = _has("AppKit") or _has("ApplicationServices") or _has("Cocoa")
+        elif is_linux:
+            ax_tree = _has("pyatspi")
+        else:
+            ax_tree = is_windows or is_mock
+
+        return {
+            "ok": True,
+            "platform": PLATFORM,
+            "adapter": adapter_name,
+            "version": (self.config.get("mcp", {}) or {}).get("version", "0.2.0"),
+            "protocol_version": 2,
+            "supports": {
+                "accessibility_tree":  bool(ax_tree),
+                "uia_invoke":          is_windows,
+                "occlusion_detection": is_windows or is_mock or _has("Quartz") or _has("Xlib"),
+                "drag":                True,
+                "ocr":                 _has("pytesseract"),
+                "vlm":                 _has("anthropic"),
+                "redaction":           True,
+                "scenarios":           is_mock,
+                "tracing":             True,
+                "replay":              True,
+                "image_blur":          _has("PIL"),
+            },
+            "config": {
+                "tree_max_depth": (self.config.get("tree", {}) or {}).get("max_depth", 8),
+                "ascii_grid": {
+                    "width":  (self.config.get("ascii_sketch", {}) or {}).get("grid_width",  110),
+                    "height": (self.config.get("ascii_sketch", {}) or {}).get("grid_height",  38),
+                },
+            },
+        }
+
+    # ── Element occlusion (design doc D14) ────────────────────────────────────
+
+    def is_element_occluded(self, element_bounds: Bounds, target_hwnd: Any,
+                            all_windows: List[WindowInfo]) -> bool:
+        """
+        True iff every pixel of *element_bounds* is covered by another window
+        above the target in Z-order, or the element lies entirely off-screen.
+
+        On platforms without Z-order info, returns False (assumed visible).
+        """
+        screen = self.get_screen_bounds()
+        clipped = _intersect_bounds(element_bounds, screen)
+        if not clipped:
+            return True
+        regions = [clipped]
+        try:
+            occluders = self._adapter.get_windows_above_bounds(target_hwnd)
+        except Exception:
+            occluders = []
+        for occ in occluders:
+            regions = _subtract_rect(regions, occ)
+        return not regions
+
     # ── Visibility helpers ────────────────────────────────────────────────────
 
     def get_screen_bounds(self) -> Bounds:
@@ -749,46 +937,41 @@ class ScreenObserver:
     def bring_to_foreground(self, target_hwnd: Any,
                             all_windows: List[WindowInfo]) -> Dict:
         """
-        Bring a window to the foreground by clicking in its title-bar area.
+        Bring a window to the foreground by clicking inside its title bar.
 
         Strategy
         --------
-        1. Compute the visible regions of the window (non-occluded, on-screen).
-           On Windows this uses real Z-order; on macOS/Linux the window is
-           assumed to be on top so the screen-clipped bounds are returned.
-        2. Pick the top-most region (lowest y-value) — that is where the title
-           bar lives. If multiple regions share the same top edge, prefer the
-           widest one.
-        3. Click near the top-centre of that region (~20 px below the top edge,
-           clamped to stay strictly inside the region).
+        1. Compute the visible (non-occluded, on-screen) regions of the window.
+        2. Try to locate a title-bar element in the accessibility tree (roles
+           include "TitleBar", "AXTitleBar", or any node whose name matches the
+           window title).  If found, click inside that element while staying
+           clear of the right-side window controls (minimize / maximize / close).
+        3. Otherwise click in the top strip's "safe zone" — about one-quarter
+           from the left, clamped away from both the left edge (where macOS's
+           traffic-light controls live) and the right edge (where Windows /
+           Linux controls live).  Very narrow windows fall back to the centre.
 
-        Returns the click result dict, or an error dict when no visible area
-        exists (window fully off-screen or, on Windows, fully occluded).
+        Returns the click result, or an error dict when no visible area
+        exists.
         """
         regions = self.get_visible_areas(target_hwnd, all_windows)
         if not regions:
-            # On Windows "no regions" means fully occluded; clicking the raw
-            # bounds would hit the covering window instead.  On macOS/Linux the
-            # platform adapter returns no occluders, so an empty result means
-            # the window is off-screen.  In both cases refuse the click.
             target = next((w for w in all_windows if w.handle == target_hwnd), None)
             if target is None:
                 return {"success": False, "error": "Window not found"}
             return {"success": False,
                     "error": "Window has no visible area (fully off-screen or occluded)"}
 
-        # Pick the top-most region (title bar is near the top of the window).
-        # Break ties by width so we prefer the widest strip at that y-level.
+        target = next((w for w in all_windows if w.handle == target_hwnd), None)
+
+        # Pick the top-most region.  Title bar is at the top of the window.
         best = min(regions, key=lambda r: (r["y"], -r["width"]))
 
-        # Click near the top-centre; offset ~20 px down (title bar height).
-        # Keep both coordinates strictly inside the region bounds.
-        title_bar_offset = min(20, max(1, (best["height"] - 1) // 2))
-        click_x = best["x"] + best["width"] // 2
-        click_y = best["y"] + title_bar_offset
-        # Clamp to region interior [x, x+width-1] × [y, y+height-1]
-        click_x = max(best["x"], min(best["x"] + best["width"]  - 1, click_x))
-        click_y = max(best["y"], min(best["y"] + best["height"] - 1, click_y))
+        # Try the tree first: an element identified as the title bar gives a
+        # known-safe click target.
+        click_x, click_y = self._title_bar_click_point(
+            target_hwnd, target, best,
+        )
 
         result = self.perform_action("click_at",
                                      value={"x": click_x, "y": click_y,
@@ -796,6 +979,98 @@ class ScreenObserver:
         result["clicked_x"] = click_x
         result["clicked_y"] = click_y
         return result
+
+    # ── Title-bar targeting (used by bring_to_foreground) ────────────────────
+
+    # Reserve these pixel margins for native window-control widgets.
+    _LEFT_CONTROL_MARGIN  = 90    # macOS traffic-lights
+    _RIGHT_CONTROL_MARGIN = 160   # Windows / Linux minimize/maximize/close
+    _MIN_SAFE_WIDTH       = 260   # below this, fall back to centre
+
+    _TITLEBAR_ROLES = {"TitleBar", "AXTitleBar", "title bar", "Title bar",
+                       "AXWindow"}
+
+    def _title_bar_click_point(self, target_hwnd: Any,
+                                window: Optional["WindowInfo"],
+                                region: Dict) -> tuple:
+        """Return (x, y) for a safe click inside the title bar of *region*."""
+        # 1. Try the accessibility tree.
+        try:
+            tree = self.get_element_tree(target_hwnd)
+        except Exception:
+            tree = None
+        bar = self._find_title_bar(tree, window.title if window else "") if tree else None
+        if bar is not None and bar.bounds and bar.bounds.width > 0:
+            tb = bar.bounds
+            # Intersect with the visible region so we don't click off-screen.
+            x1 = max(region["x"], tb.x)
+            y1 = max(region["y"], tb.y)
+            x2 = min(region["x"] + region["width"],  tb.right)
+            y2 = min(region["y"] + region["height"], tb.bottom)
+            if x2 > x1 and y2 > y1:
+                # Click 1/4 from the left of the title bar's visible width,
+                # but skip the leftmost control margin.
+                safe_left  = x1 + min(self._LEFT_CONTROL_MARGIN,  (x2 - x1) // 4)
+                safe_right = x2 - min(self._RIGHT_CONTROL_MARGIN, (x2 - x1) // 4)
+                if safe_right <= safe_left:
+                    cx = (x1 + x2) // 2
+                else:
+                    quarter = x1 + (x2 - x1) // 4
+                    cx = max(safe_left, min(safe_right, quarter))
+                cy = y1 + max(1, (y2 - y1) // 2)
+                return cx, cy
+
+        # 2. Fall back to the visible region's top strip.
+        rx = region["x"]
+        rw = region["width"]
+        ry = region["y"]
+        rh = region["height"]
+        if rw < self._MIN_SAFE_WIDTH:
+            cx = rx + rw // 2
+        else:
+            safe_left  = rx + self._LEFT_CONTROL_MARGIN
+            safe_right = rx + rw - self._RIGHT_CONTROL_MARGIN
+            candidate  = rx + rw // 4
+            if safe_right <= safe_left:
+                cx = rx + rw // 2
+            else:
+                cx = max(safe_left, min(safe_right, candidate))
+        title_bar_offset = min(12, max(1, (rh - 1) // 2))
+        cy = ry + title_bar_offset
+        # Clamp inside the region.
+        cx = max(rx, min(rx + rw - 1, cx))
+        cy = max(ry, min(ry + rh - 1, cy))
+        return cx, cy
+
+    def _find_title_bar(self, root: Optional["UIElement"],
+                         window_title: str) -> Optional["UIElement"]:
+        """Locate a title-bar-like element by role or by matching name.
+
+        Returns None for the root window itself (clicking the whole window's
+        center is precisely what we are trying to avoid).
+        """
+        if root is None:
+            return None
+        from collections import deque
+        queue = deque([(root, 0)])
+        while queue:
+            elem, depth = queue.popleft()
+            # Never return the root — its centre is the window body, not the
+            # title bar.
+            if depth > 0:
+                if (elem.role or "") in self._TITLEBAR_ROLES:
+                    return elem
+                if window_title and (elem.name or "").strip() == window_title.strip():
+                    # Must be near the top edge AND short — a real title bar.
+                    if (elem.bounds and root.bounds
+                            and (elem.bounds.y - root.bounds.y) < 40
+                            and elem.bounds.height <= 48):
+                        return elem
+            if depth > 3:
+                continue
+            for c in elem.children:
+                queue.append((c, depth + 1))
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

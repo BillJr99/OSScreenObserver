@@ -81,6 +81,24 @@ pip install pyatspi  # optional
 pip install pytesseract
 ```
 
+On **Windows** the Tesseract installer does not add the binary to `PATH`, so
+you must also point the server at it in `config.json`:
+
+```jsonc
+{
+  "ocr": {
+    "enabled": true,
+    // Backslashes inside JSON strings must be escaped, OR use forward slashes:
+    "tesseract_cmd": "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+    // equivalent: "c:/Program Files/Tesseract-OCR/tesseract.exe"
+  }
+}
+```
+
+If the JSON parser rejects the file (you forgot to escape a backslash) the
+server logs a loud `[main:load_config]` line to stderr and reports
+`config_error` plus an `ocr` diagnostic block at `GET /api/healthz`.
+
 **VLM descriptions (optional, all platforms)**
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...

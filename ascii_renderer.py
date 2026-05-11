@@ -69,18 +69,34 @@ def _legend_key(n: int) -> str:
 
 # ─── OCR helper ───────────────────────────────────────────────────────────────
 
-def _ocr_words(screenshot_bytes: bytes) -> List[Tuple[int, int, int, int, str]]:
+def _ocr_words(screenshot_bytes: bytes,
+               config: Optional[dict] = None
+               ) -> List[Tuple[int, int, int, int, str]]:
     """
     Run Tesseract on *screenshot_bytes* and return a list of
     (left, top, width, height, text) tuples for every word whose
     confidence is ≥ 30.  Returns an empty list when pytesseract is
     unavailable or the image cannot be decoded.
+
+    Pass *config* (the same dict ASCIIRenderer was constructed with) so
+    ocr.tesseract_cmd is applied here even when this renderer is the
+    first module in the process to touch pytesseract.  Falls back to
+    whichever path was previously configured if config is None.
     """
     try:
         import io as _io
 
         import pytesseract
         from PIL import Image
+
+        # Apply ocr.tesseract_cmd from config.  Passing None preserves any
+        # previously-configured value but cannot establish a fresh one;
+        # callers should hand us a config dict when one is available.
+        try:
+            from ocr_util import configure as _ocr_configure
+            _ocr_configure(config)
+        except Exception:
+            pass
 
         img  = Image.open(_io.BytesIO(screenshot_bytes)).convert("RGB")
         data = pytesseract.image_to_data(
@@ -113,10 +129,18 @@ class ASCIIRenderer:
     """Renders a UIElement tree as a spatial ASCII sketch."""
 
     def __init__(self, config: dict):
+        self._config = config
         sketch_cfg = config.get("ascii_sketch", {})
         self.default_width  = sketch_cfg.get("grid_width",  110)
         self.default_height = sketch_cfg.get("grid_height",  38)
         self.box = _UNICODE_BOX if sketch_cfg.get("unicode_box", True) else _ASCII_BOX
+        # Apply ocr.tesseract_cmd up-front so any OCR overlay can find it
+        # even if no other module has called configure() yet.
+        try:
+            from ocr_util import configure as _ocr_configure
+            _ocr_configure(config)
+        except Exception:
+            pass
 
     # ── public entry point ────────────────────────────────────────────────────
 
@@ -261,7 +285,7 @@ class ASCIIRenderer:
             # written so that accessibility labels and box borders are preserved.
 
             if screenshot_bytes:
-                words = _ocr_words(screenshot_bytes)
+                words = _ocr_words(screenshot_bytes, self._config)
                 for wx, wy, ww, wh, text in words:
                     # Screenshot coords are window-relative (i.e. already offset
                     # by the window's top-left corner, which is ref.x / ref.y).
