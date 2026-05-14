@@ -18,7 +18,7 @@ OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurabl
 ### Startup modes
 
 ```bash
-python main.py --mode inspect          # REST API only
+python main.py --mode inspect          # HTTP server only (web UI + REST API)
 python main.py --mode both             # REST API + MCP stdio simultaneously
 python main.py --mock --mode inspect   # Mock mode with synthetic data (no OS access)
 python main.py --mock --scenario scenarios_examples/login.yaml  # Scenario-driven mock
@@ -27,7 +27,7 @@ python main.py --mock --scenario scenarios_examples/login.yaml  # Scenario-drive
 ### Health check (poll until ready)
 
 ```bash
-curl http://127.0.0.1:5001/api/healthz
+curl http://127.0.0.1:5001/api/windows
 ```
 
 ### Endpoint quick reference
@@ -36,7 +36,7 @@ curl http://127.0.0.1:5001/api/healthz
 |--------|----------|-------------|
 | `GET` | `/api/windows` | List visible top-level windows |
 | `GET` | `/api/structure` | Full accessibility element tree (JSON) |
-| `GET` | `/api/description` | Screen description (`mode=accessibility\|ocr\|vlm\|combined`) |
+| `GET` | `/api/description` | Screen description (`mode=accessibility|ocr|vlm|combined`) |
 | `GET` | `/api/sketch` | ASCII spatial layout diagram |
 | `GET` | `/api/screenshot` | Base64-encoded PNG screenshot |
 | `POST` | `/api/action` | Execute click, type, key, or scroll action |
