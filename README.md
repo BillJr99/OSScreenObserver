@@ -13,7 +13,7 @@ Both interfaces share the same underlying observer and can run simultaneously.
 
 ## REST API
 
-OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). No authentication required. Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
+OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). **No authentication is enforced** — keep the server on localhost or a trusted private network and do not expose it to untrusted networks without a reverse-proxy or firewall. Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
 
 ### Startup modes
 
@@ -33,10 +33,10 @@ curl http://127.0.0.1:5001/api/healthz
 ### Endpoint quick reference
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+|--------|----------|--------------|
 | `GET` | `/api/windows` | List visible top-level windows |
 | `GET` | `/api/structure` | Full accessibility element tree (JSON) |
-| `GET` | `/api/description` | Screen description (`mode=accessibility|ocr|vlm|combined`) |
+| `GET` | `/api/description` | Combined screen description (accessibility + OCR + VLM) |
 | `GET` | `/api/sketch` | ASCII spatial layout diagram |
 | `GET` | `/api/screenshot` | Base64-encoded PNG screenshot |
 | `POST` | `/api/action` | Execute click, type, key, or scroll action |
@@ -50,8 +50,8 @@ curl http://127.0.0.1:5001/api/healthz
 # 1. List windows
 curl http://127.0.0.1:5001/api/windows
 
-# 2. Get description of focused window
-curl "http://127.0.0.1:5001/api/description?mode=accessibility"
+# 2. Get combined description of focused window (all available sources)
+curl http://127.0.0.1:5001/api/description
 
 # 3. Get element tree for precise coordinates
 curl http://127.0.0.1:5001/api/structure
@@ -219,7 +219,7 @@ Open **http://127.0.0.1:5001** in a browser after starting with `--mode inspect`
 or `--mode both`.
 
 | Tab | Content |
-|-----|---------|
+|-----|------|
 | **STRUCTURE** | Interactive collapsible JSON tree of the accessibility element hierarchy |
 | **DESCRIPTION** | Combined description from all available sources (accessibility tree, OCR, VLM). Each source is shown in its own labeled section. A badge row at the top shows which sources ran and how to enable any that are missing. |
 | **SKETCH** | ASCII spatial layout diagram (Unicode box-drawing characters) |
@@ -373,7 +373,7 @@ contains `"success": false` with an explanatory error message — the click is
 **Platform notes**
 
 | Platform | Occlusion detection |
-|----------|---------------------|
+|----------|-----------------------|
 | Windows  | Real Z-order via `win32gui`: a fully-covered window returns `success: false` |
 | macOS / Linux | Z-order unavailable; the window is assumed to be on top, so the screen-clipped bounds are used. A fully-covered window may still produce a click that lands on the covering window. |
 

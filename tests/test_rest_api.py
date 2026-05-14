@@ -1,4 +1,4 @@
-"""Comprehensive pytest tests for the Flask REST API.
+"""Core endpoint smoke tests for the Flask REST API.
 
 All tests use the `client` fixture from conftest.py which wires up a
 mock ScreenObserver so no real desktop or display is required.
@@ -6,7 +6,7 @@ mock ScreenObserver so no real desktop or display is required.
 from __future__ import annotations
 
 
-# ── /api/windows ────────────────────────────────────────────────────────────
+# ── /api/windows ─────────────────────────────────────────────────────────────────────────────────
 
 
 def test_get_windows_returns_200(client):
@@ -41,7 +41,7 @@ def test_get_windows_entries_have_required_fields(client):
             assert key in bounds
 
 
-# ── /api/healthz ────────────────────────────────────────────────────────────
+# ── /api/healthz ────────────────────────────────────────────────────────────────────────────────
 
 
 def test_healthz_returns_200(client):
@@ -63,7 +63,7 @@ def test_healthz_adapter_is_mock(client):
     assert "Mock" in data["adapter"]
 
 
-# ── /api/structure ──────────────────────────────────────────────────────────
+# ── /api/structure ───────────────────────────────────────────────────────────────────────────────
 
 
 def test_structure_default_window(client):
@@ -88,7 +88,7 @@ def test_structure_invalid_window_index(client):
     assert r.json["ok"] is True
 
 
-# ── /api/description ────────────────────────────────────────────────────────
+# ── /api/description ──────────────────────────────────────────────────────────────────────────────
 
 
 def test_description_default_window(client):
@@ -103,7 +103,7 @@ def test_description_with_window_index(client):
     assert isinstance(data["description"], str)
 
 
-# ── /api/sketch ─────────────────────────────────────────────────────────────
+# ── /api/sketch ───────────────────────────────────────────────────────────────────────────────────
 
 
 def test_sketch_default_window(client):
@@ -128,7 +128,7 @@ def test_sketch_custom_grid_size(client):
     assert data["grid_height"] == 20
 
 
-# ── /api/screenshot ─────────────────────────────────────────────────────────
+# ── /api/screenshot ───────────────────────────────────────────────────────────────────────────────
 
 
 def test_screenshot_returns_200(client):
@@ -151,7 +151,7 @@ def test_screenshot_with_window_index(client):
     assert "window" in data
 
 
-# ── /api/action (POST) ──────────────────────────────────────────────────────
+# ── /api/action (POST) ────────────────────────────────────────────────────────────────────────────
 
 
 def test_action_click_at(client):
@@ -194,7 +194,7 @@ def test_action_missing_body_defaults(client):
     assert r.status_code == 400
 
 
-# ── /api/capabilities ──────────────────────────────────────────────────────
+# ── /api/capabilities ───────────────────────────────────────────────────────────────────────────
 
 
 def test_capabilities_returns_200(client):
@@ -214,7 +214,7 @@ def test_capabilities_supports_accessibility_tree(client):
     assert data["supports"].get("accessibility_tree") is True
 
 
-# ── /api/monitors ──────────────────────────────────────────────────────────
+# ── /api/monitors ───────────────────────────────────────────────────────────────────────────
 
 
 def test_monitors_returns_list(client):
@@ -224,7 +224,7 @@ def test_monitors_returns_list(client):
     assert isinstance(data["monitors"], list)
 
 
-# ── /api/tools ─────────────────────────────────────────────────────────────
+# ── /api/tools ──────────────────────────────────────────────────────────────────────────────────
 
 
 def test_tools_list(client):
@@ -237,7 +237,7 @@ def test_tools_list(client):
         assert tool in data["tools"]
 
 
-# ── /api/tool/<name> (generic console) ─────────────────────────────────────
+# ── /api/tool/<name> (generic console) ────────────────────────────────────────────────────
 
 
 def test_tool_run_list_windows(client):
@@ -256,7 +256,7 @@ def test_tool_run_unknown_tool_returns_error(client):
     assert data.get("ok") is False
 
 
-# ── /api/metrics ────────────────────────────────────────────────────────────
+# ── /api/metrics ─────────────────────────────────────────────────────────────────────────────────
 
 
 def test_metrics_returns_prometheus_text(client):
@@ -268,7 +268,7 @@ def test_metrics_returns_prometheus_text(client):
     assert "oso_uptime_seconds" in text
 
 
-# ── Root UI ─────────────────────────────────────────────────────────────────
+# ── Root UI ─────────────────────────────────────────────────────────────────────────────────────
 
 
 def test_root_serves_html(client):
@@ -277,7 +277,7 @@ def test_root_serves_html(client):
     assert b"OS Screen Observer" in r.data
 
 
-# ── /api/visible_areas ──────────────────────────────────────────────────────
+# ── /api/visible_areas ────────────────────────────────────────────────────────────────────────────
 
 
 def test_visible_areas_requires_window_index(client):
@@ -294,7 +294,7 @@ def test_visible_areas_with_window_index(client):
     assert isinstance(data["visible_regions"], list)
 
 
-# ── /api/find_element ───────────────────────────────────────────────────────
+# ── /api/find_element ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_find_element_happy_path(client):
@@ -313,7 +313,7 @@ def test_find_element_not_found(client):
     assert r["error"]["code"] == "ElementNotFound"
 
 
-# ── /api/observe ────────────────────────────────────────────────────────────
+# ── /api/observe ──────────────────────────────────────────────────────────────────────────────────
 
 
 def test_observe_full_snapshot(client):
@@ -331,7 +331,7 @@ def test_observe_diff_unchanged(client):
     assert diff["unchanged"] is True
 
 
-# ── /api/snapshot lifecycle ──────────────────────────────────────────────────
+# ── /api/snapshot lifecycle ────────────────────────────────────────────────────────────────────────
 
 
 def test_snapshot_create_get_delete(client):
@@ -357,7 +357,7 @@ def test_snapshot_missing_returns_error(client):
     assert g["error"]["code"] == "SnapshotExpired"
 
 
-# ── /api/budget_status ──────────────────────────────────────────────────────
+# ── /api/budget_status ──────────────────────────────────────────────────────────────────────────
 
 
 def test_budget_status(client):
@@ -365,7 +365,7 @@ def test_budget_status(client):
     assert data["ok"] is True
 
 
-# ── /api/redaction_status ───────────────────────────────────────────────────
+# ── /api/redaction_status ───────────────────────────────────────────────────────────────────────
 
 
 def test_redaction_status(client):
