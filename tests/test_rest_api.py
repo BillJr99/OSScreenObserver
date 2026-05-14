@@ -85,7 +85,7 @@ def test_structure_invalid_window_index(client):
     # of range, so the call still succeeds rather than returning an error.
     r = client.get("/api/structure?window_index=9999")
     assert r.status_code == 200
-    assert r.json()["ok"] is True
+    assert r.json["ok"] is True
 
 
 # ── /api/description ────────────────────────────────────────────────────────
