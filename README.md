@@ -11,6 +11,71 @@ Both interfaces share the same underlying observer and can run simultaneously.
 
 ---
 
+## REST API
+
+OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). **No authentication is enforced** — keep the server on localhost or a trusted private network and do not expose it to untrusted networks without a reverse-proxy or firewall. Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
+
+> **Security:** The REST API has no authentication. When started with the default `--host 127.0.0.1`, it is only accessible locally. If you bind to `0.0.0.0` or any non-loopback address, the API — including `/api/action` which can control your desktop — will be accessible from the network. Only do this behind a trusted firewall or VPN.
+>
+> **CORS warning:** The Flask server enables permissive CORS for all routes by default (`CORS(app)`). This means any website running in the user's browser can send cross-origin requests to `http://127.0.0.1:5001`, including destructive `/api/action` calls (clicks, key presses, etc.). If you are running the web UI alongside the API, consider restricting CORS origins or adding an authentication/proxy layer before exposing the server to a multi-user environment.
+
+### Startup modes
+
+```bash
+python main.py --mode inspect          # HTTP server only (web UI + REST API)
+python main.py --mode both             # REST API + MCP stdio simultaneously
+python main.py --mock --mode inspect   # Mock mode with synthetic data (no OS access)
+python main.py --mock --scenario scenarios_examples/login.yaml  # Scenario-driven mock
+```
+
+### Health check (poll until ready)
+
+```bash
+curl http://127.0.0.1:5001/api/healthz
+```
+
+### Endpoint quick reference
+
+| Method | Endpoint | Description |
+|--------|----------|--------------|
+| `GET` | `/api/windows` | List visible top-level windows |
+| `GET` | `/api/structure` | Full accessibility element tree (JSON) |
+| `GET` | `/api/description` | Combined screen description (accessibility + OCR + VLM) — `mode` query parameter is accepted but ignored — always returns combined output |
+| `GET` | `/api/sketch` | ASCII spatial layout diagram |
+| `GET` | `/api/screenshot` | Base64-encoded PNG screenshot |
+| `POST` | `/api/action` | Execute click, type, key, or scroll action |
+| `GET` | `/api/capabilities` | Server capabilities and platform info |
+| `GET` | `/api/healthz` | Health and uptime |
+| `GET` | `/api/metrics` | Prometheus-format metrics (`text/plain`) |
+
+### Example workflow
+
+```bash
+# 1. List windows
+curl http://127.0.0.1:5001/api/windows
+
+# 2. Get combined description of focused window (all available sources)
+curl http://127.0.0.1:5001/api/description
+
+# 3. Get element tree for precise coordinates
+curl http://127.0.0.1:5001/api/structure
+
+# 4. Click a button at coordinates
+curl -X POST http://127.0.0.1:5001/api/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "click_at", "x": 480, "y": 300}'
+```
+
+### Full API reference
+
+See [screen_observer_api_reference.md](screen_observer_api_reference.md) for complete endpoint documentation including v2 agentic endpoints (snapshots, tracing, replay, scenarios, oracles, budgets, redaction). (Note: `/api/metrics` returns plain text and `/` returns an HTML page, not JSON; the reference doc has been updated to reflect these exceptions.)
+
+### LLM tool integration
+
+The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI function-calling schema documented in `screen_observer_api_reference.md`. Any system that supports OpenAI-compatible tool use can integrate OSScreenObserver using these tool schemas.
+
+---
+
 ## Architecture
 
 ```
@@ -158,7 +223,7 @@ Open **http://127.0.0.1:5001** in a browser after starting with `--mode inspect`
 or `--mode both`.
 
 | Tab | Content |
-|-----|---------|
+|-----|------|
 | **STRUCTURE** | Interactive collapsible JSON tree of the accessibility element hierarchy |
 | **DESCRIPTION** | Combined description from all available sources (accessibility tree, OCR, VLM). Each source is shown in its own labeled section. A badge row at the top shows which sources ran and how to enable any that are missing. |
 | **SKETCH** | ASCII spatial layout diagram (Unicode box-drawing characters) |
@@ -247,7 +312,7 @@ The web inspector exposes the following endpoints (all `GET` unless noted):
 |----------|--------|-------------|
 | `GET /api/windows` | — | List all visible windows |
 | `GET /api/structure` | `window_index` | Accessibility element tree (JSON) |
-| `GET /api/description` | `window_index` | Combined description (accessibility + OCR + VLM, whatever is available) |
+| `GET /api/description` | `window_index` | Combined description (accessibility + OCR + VLM, whatever is available). `mode` query parameter is accepted but ignored — always returns combined output. |
 | `GET /api/sketch` | `window_index`, `grid_width`, `grid_height`, `ocr` | ASCII layout sketch |
 | `GET /api/screenshot` | `window_index` | Screenshot as base64 PNG |
 | `GET /api/full_screenshot` | `window_index`, `grid_width`, `grid_height` | Screenshot + ASCII sketch (sketch uses OCR overlay) |
@@ -312,7 +377,7 @@ contains `"success": false` with an explanatory error message — the click is
 **Platform notes**
 
 | Platform | Occlusion detection |
-|----------|---------------------|
+|----------|-----------------------|
 | Windows  | Real Z-order via `win32gui`: a fully-covered window returns `success: false` |
 | macOS / Linux | Z-order unavailable; the window is assumed to be on top, so the screen-clipped bounds are used. A fully-covered window may still produce a click that lands on the covering window. |
 
