@@ -66,7 +66,7 @@ curl -X POST http://127.0.0.1:5001/api/action \
 
 ### Full API reference
 
-See [screen_observer_api_reference.md](screen_observer_api_reference.md) for complete endpoint documentation including v2 agentic endpoints (snapshots, tracing, replay, scenarios, oracles, budgets, redaction). (Note: `/api/metrics` returns plain text and `/api/screen` returns an HTML page, not JSON)
+See [screen_observer_api_reference.md](screen_observer_api_reference.md) for complete endpoint documentation including v2 agentic endpoints (snapshots, tracing, replay, scenarios, oracles, budgets, redaction). (Note: `/api/metrics` returns plain text and `/` returns an HTML page, not JSON)
 
 ### LLM tool integration
 
