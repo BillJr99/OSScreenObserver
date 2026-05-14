@@ -5,8 +5,10 @@ LLM and how to call the REST API that backs them. It covers tool definition
 schemas, every endpoint's URL, method, query parameters, request body, and
 the exact shape of every response including errors.
 
-The server runs on `http://127.0.0.1:5001` by default. All endpoints return
-`Content-Type: application/json`. There is no authentication.
+The server runs on `http://127.0.0.1:5001` by default. Most `/api/*` endpoints
+return `Content-Type: application/json`; exceptions are `/api/metrics`
+(returns `text/plain` Prometheus format) and `/` (returns HTML). There is no
+authentication.
 
 ---
 
@@ -20,14 +22,14 @@ python main.py --mode both             # REST + MCP stdio simultaneously
 python main.py --mock --mode inspect   # synthetic data, no OS access needed
 ```
 
-The server is ready when `GET /api/windows` returns a 200 response. Poll
+The server is ready when `GET /api/healthz` returns a 200 response. Poll
 with a short sleep until it succeeds:
 
 ```python
 import time, httpx
 for _ in range(20):
     try:
-        httpx.get("http://127.0.0.1:5001/api/windows", timeout=2).raise_for_status()
+        httpx.get("http://127.0.0.1:5001/api/healthz", timeout=2).raise_for_status()
         break
     except Exception:
         time.sleep(0.5)
@@ -118,16 +120,12 @@ SCREEN_TOOLS = [
         "function": {
             "name": "get_screen_description",
             "description": (
-                "Return a textual description of the window using one of three "
-                "analysis modes. "
-                "mode='accessibility': serialize the element tree to structured prose "
-                "(instant, no extra API calls, best default). "
-                "mode='ocr': extract visible text via Tesseract OCR on a screenshot "
-                "(captures text not in the accessibility tree; requires pytesseract). "
-                "mode='vlm': send the screenshot to a vision model for rich "
-                "contextual interpretation (highest fidelity; requires ANTHROPIC_API_KEY "
-                "and vlm.enabled=true in server config). "
-                "mode='combined': return all enabled modalities in one call."
+                "Return a combined textual description of the window using all "
+                "available analysis sources: accessibility tree prose, OCR text "
+                "(if pytesseract is installed), and VLM interpretation (if "
+                "ANTHROPIC_API_KEY and vlm.enabled=true are configured). "
+                "The mode parameter is accepted for compatibility but is always "
+                "treated as 'combined' — all enabled sources are included."
             ),
             "parameters": {
                 "type": "object",
@@ -139,7 +137,7 @@ SCREEN_TOOLS = [
                     "mode": {
                         "type": "string",
                         "enum": ["accessibility", "ocr", "vlm", "combined"],
-                        "description": "Analysis mode (default: accessibility).",
+                        "description": "Accepted for compatibility; always returns combined output.",
                     },
                 },
                 "required": [],
@@ -310,7 +308,7 @@ Map tool names to REST calls:
 | `list_windows`         | `GET /api/windows`                                     |
 | `observe_window`       | `GET /api/sketch` + `GET /api/description`             |
 | `get_element_tree`     | `GET /api/structure`                                   |
-| `get_screen_description` | `GET /api/description?mode=<mode>`                   |
+| `get_screen_description` | `GET /api/description` (mode ignored; always combined)|
 | `get_screen_sketch`    | `GET /api/sketch`                                      |
 | `get_screenshot`       | `GET /api/screenshot`                                  |
 | `click_at`             | `POST /api/action` `{"action":"click_at",...}`         |
@@ -324,7 +322,9 @@ Map tool names to REST calls:
 ### Common Conventions
 
 - Base URL: `http://127.0.0.1:5001` (configurable via `config.json`)
-- All responses: `Content-Type: application/json`
+- Content-Type: Most `/api/*` endpoints return `application/json`. Exceptions:
+  - `GET /api/metrics` returns `text/plain` (Prometheus format)
+  - `GET /` returns `text/html` (the web inspector UI)
 - `window_index`: integer, 0-based, from `list_windows`. Optional on every
   endpoint; omit to use the currently focused window.
 - Error shape: `{"error": "<message string>"}` with HTTP 400 or 500.
@@ -466,48 +466,27 @@ center_y = element["bounds"]["y"] + element["bounds"]["height"] // 2
 
 ### GET /api/description
 
-Return a textual description of the window via one of three analysis modes.
+Return a combined textual description of the window using all available
+analysis sources.
+
+**Note:** The `mode` query parameter is accepted for compatibility but is
+always ignored — the endpoint always returns combined output (every enabled
+source: accessibility tree, OCR if configured, VLM if configured).
 
 **Query parameters:**
 
 | Parameter      | Type    | Required | Default          | Description                  |
 |----------------|---------|----------|------------------|------------------------------|
 | `window_index` | integer | No       | focused window   |                              |
-| `mode`         | string  | No       | `accessibility`  | `accessibility` \| `ocr` \| `vlm` \| `combined` |
+| `mode`         | string  | No       | _(ignored)_      | Accepted but always ignored; always returns combined output. |
 
-**Response — mode=accessibility:**
-
-```jsonc
-{
-  "mode": "accessibility",
-  "description": "Application : notepad.exe\nWindow      : Untitled — Notepad\nGeometry    : (80, 60)  800 × 600 px\n\nRoot: Window  \"Untitled — Notepad\"\n  └─ MenuBar\n     └─ MenuItem \"File\"  @(80,60) 56×22\n     └─ MenuItem \"Edit\"  @(138,60) 56×22\n  └─ Document \"Text Editor\" = 'Hello, world!\\nThis is a test...'  [FOCUSED]  @(80,82) 800×514\n  └─ StatusBar\n     └─ Text \"Position\" = 'Ln 1, Col 1'  @(80,614) 188×22\n\n[14 elements total; focused → Document \"Text Editor\"]"
-}
-```
-
-**Response — mode=ocr:**
-
-```jsonc
-{
-  "mode": "ocr",
-  "description": "File  Edit  Format  View  Help\n\nHello, world!\nThis is a test document.\nLine 3 has some content here.\n\nLn 1, Col 1     100%     UTF-8     Windows (CRLF)"
-}
-```
-
-**Response — mode=vlm:**
-
-```jsonc
-{
-  "mode": "vlm",
-  "description": "1. Application: Notepad (Windows built-in text editor)\n2. Main content: A plain-text document with three lines of content...\n3. UI controls: Menu bar with File/Edit/Format/View/Help items; vertical and horizontal scrollbars; status bar showing line/column position, zoom level, encoding, and line ending type\n4. Spatial layout: Menu bar spans full width at top; large editing area occupies most of the window; status bar at bottom\n5. Active element: The text editing area has keyboard focus (cursor visible at line 1, column 1)\n6. Natural next actions: Type text, use File > Save As to save, or use Format > Word Wrap to enable wrapping"
-}
-```
-
-**Response — mode=combined:**
+**Response:**
 
 ```jsonc
 {
   "mode": "combined",
-  "accessibility": "...",     // always present
+  "effective_mode": "combined",
+  "accessibility": "Application : notepad.exe\nWindow      : Untitled — Notepad\n...",
   "ocr": "...",               // present when ocr.enabled=true in config
   "vlm": "..."                // present when vlm.enabled=true in config
 }
@@ -546,7 +525,7 @@ Render the accessibility element tree as an ASCII spatial layout diagram.
   "window":      "Untitled — Notepad",
   "grid_width":  72,
   "grid_height": 24,
-  "sketch": "+------------------------------------------------------------------------+\n| Window \"Untitled — Notepad\"                                            |\n| +----------------------------------------------------------------------+ |\n| | MenuBar                                                              | |\n| | +--------+ +--------+ +----------+ +--------+ +--------+            | |\n| | | Menutem| |MenuItem| | MenuItem | |MenuItem| |MenuItem|            | |\n| | | \"File\" | | \"Edit\" | | \"Format\" | | \"View\" | | \"Help\" |            | |\n| | +--------+ +--------+ +----------+ +--------+ +--------+            | |\n| +----------------------------------------------------------------------+ |\n| +----------------------------------------------------------------------+ |\n| | Document \"Text Editor\" [hello, world!...] *FOCUSED*                 | |\n| |                                                                      | |\n| |                                                                      | |\n| +----------------------------------------------------------------------+ |\n| +----------------------------------------------------+ +--------------+ |\n| | StatusBar                                          | | ScrollBar    | |\n| | Text \"Position\" [Ln 1, Col 1]                      | |              | |\n| +----------------------------------------------------+ +--------------+ |\n+------------------------------------------------------------------------+"
+  "sketch": "+------------------------------------------------------------------------+\n| Window \"Untitled — Notepad\"                                            |\n..."
 }
 ```
 
@@ -847,9 +826,9 @@ GET  /api/windows
 GET  /api/structure?window_index=N
      → {window, element_count, tree: {id, name, role, value, bounds, enabled, focused, children[]}}
 
-GET  /api/description?window_index=N&mode=M
-     M = accessibility | ocr | vlm | combined
-     → {mode, description}   or   {mode, accessibility, ocr, vlm}
+GET  /api/description?window_index=N
+     mode param ignored; always returns combined output
+     → {mode:"combined", effective_mode:"combined", accessibility, ocr?, vlm?}
 
 GET  /api/sketch?window_index=N&grid_width=W&grid_height=H
      → {window, grid_width, grid_height, sketch}
@@ -868,6 +847,8 @@ bounds:  {x, y, width, height}  — absolute screen pixels, top-left origin
 click:   x + width//2,  y + height//2  — center of element
 errors:  {"error": "message"}  HTTP 400|500
          {"success": false, "error": "message"}  for /api/action
+
+NOTE: /api/metrics returns text/plain (Prometheus); / returns HTML
 ```
 
 ---
@@ -1162,6 +1143,7 @@ GET /api/healthz            → {ok, uptime_s, step_count, adapter, version}
 GET /api/metrics            → Prometheus text format (oso_step_count,
                                oso_uptime_seconds, oso_actions_used,
                                oso_screenshots_used, oso_active_trace)
+                               Content-Type: text/plain
 ```
 
 ### Error envelope (v2 endpoints)

@@ -16,6 +16,8 @@ Both interfaces share the same underlying observer and can run simultaneously.
 OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). **No authentication is enforced** — keep the server on localhost or a trusted private network and do not expose it to untrusted networks without a reverse-proxy or firewall. Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
 
 > **Security:** The REST API has no authentication. When started with the default `--host 127.0.0.1`, it is only accessible locally. If you bind to `0.0.0.0` or any non-loopback address, the API — including `/api/action` which can control your desktop — will be accessible from the network. Only do this behind a trusted firewall or VPN.
+>
+> **CORS warning:** The Flask server enables permissive CORS for all routes by default (`CORS(app)`). This means any website running in the user's browser can send cross-origin requests to `http://127.0.0.1:5001`, including destructive `/api/action` calls (clicks, key presses, etc.). If you are running the web UI alongside the API, consider restricting CORS origins or adding an authentication/proxy layer before exposing the server to a multi-user environment.
 
 ### Startup modes
 
@@ -66,7 +68,7 @@ curl -X POST http://127.0.0.1:5001/api/action \
 
 ### Full API reference
 
-See [screen_observer_api_reference.md](screen_observer_api_reference.md) for complete endpoint documentation including v2 agentic endpoints (snapshots, tracing, replay, scenarios, oracles, budgets, redaction). (Note: `/api/metrics` returns plain text and `/` returns an HTML page, not JSON)
+See [screen_observer_api_reference.md](screen_observer_api_reference.md) for complete endpoint documentation including v2 agentic endpoints (snapshots, tracing, replay, scenarios, oracles, budgets, redaction). (Note: `/api/metrics` returns plain text and `/` returns an HTML page, not JSON; the reference doc has been updated to reflect these exceptions.)
 
 ### LLM tool integration
 
