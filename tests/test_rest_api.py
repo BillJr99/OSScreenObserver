@@ -5,8 +5,6 @@ mock ScreenObserver so no real desktop or display is required.
 """
 from __future__ import annotations
 
-import json
-
 
 # ── /api/windows ────────────────────────────────────────────────────────────
 
@@ -85,8 +83,9 @@ def test_structure_with_window_index(client):
 def test_structure_invalid_window_index(client):
     # The mock adapter falls back to the focused window when the index is out
     # of range, so the call still succeeds rather than returning an error.
-    data = client.get("/api/structure?window_index=9999").get_json()
-    assert data.get("ok") is True or "error" in data
+    r = client.get("/api/structure?window_index=9999")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
 
 
 # ── /api/description ────────────────────────────────────────────────────────
