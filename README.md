@@ -1,4 +1,3 @@
-
 # OS Screen Observer
 
 A prototype that exposes the operating system's UI accessibility tree,
@@ -28,7 +27,7 @@ python main.py --mock --scenario scenarios_examples/login.yaml  # Scenario-drive
 ### Health check (poll until ready)
 
 ```bash
-curl http://127.0.0.1:5001/api/windows
+curl http://127.0.0.1:5001/api/healthz
 ```
 
 ### Endpoint quick reference
@@ -81,9 +80,9 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 │  ┌──────────────────────┐      ┌───────────────────────────────────┐    │
 │  │  Flask web inspector │      │  MCP stdio server                 │    │
 │  │  (background thread) │      │  (main thread, stdin/stdout)      │    │
-│  └──────────┬───────────┘      └──────────────────┬────────────────┘    │
+│  └──────────┼───────────┘      └──────────────────┼────────────────┘    │
 │             │                                     │                     │
-│             └──────────────┬──────────────────────┘                     │
+│             └──────────────┼──────────────────────┘                     │
 │                            ▼                                            │
 │                    ScreenObserver                                       │
 │                   /      |       \                                      │
@@ -429,7 +428,7 @@ screen_observer/
 ├── config.json        Runtime configuration
 ├── requirements.txt   Python dependencies
 ├── observer.py        Platform adapters + ScreenObserver facade
-├── ascii_renderer.py  ASCII ASCII spatial sketch renderer
+├── ascii_renderer.py  ASCII spatial sketch renderer
 ├── description.py     Textual description generator (tree / OCR / VLM)
 ├── mcp_server.py      MCP JSON-RPC 2.0 stdio server
 └── web_inspector.py   Flask REST API + embedded single-page UI
