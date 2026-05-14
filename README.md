@@ -11,6 +11,67 @@ Both interfaces share the same underlying observer and can run simultaneously.
 
 ---
 
+## REST API
+
+OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). No authentication required. All responses are `application/json`.
+
+### Startup modes
+
+```bash
+python main.py --mode inspect          # REST API only
+python main.py --mode both             # REST API + MCP stdio simultaneously
+python main.py --mock --mode inspect   # Mock mode with synthetic data (no OS access)
+python main.py --mock --scenario scenarios_examples/login.yaml  # Scenario-driven mock
+```
+
+### Health check (poll until ready)
+
+```bash
+curl http://127.0.0.1:5001/api/healthz
+```
+
+### Endpoint quick reference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/windows` | List visible top-level windows |
+| `GET` | `/api/structure` | Full accessibility element tree (JSON) |
+| `GET` | `/api/description` | Screen description (`mode=accessibility\|ocr\|vlm\|combined`) |
+| `GET` | `/api/sketch` | ASCII spatial layout diagram |
+| `GET` | `/api/screenshot` | Base64-encoded PNG screenshot |
+| `POST` | `/api/action` | Execute click, type, key, or scroll action |
+| `GET` | `/api/capabilities` | Server capabilities and platform info |
+| `GET` | `/api/healthz` | Health and uptime |
+| `GET` | `/api/metrics` | Prometheus-format metrics |
+
+### Example workflow
+
+```bash
+# 1. List windows
+curl http://127.0.0.1:5001/api/windows
+
+# 2. Get description of focused window
+curl "http://127.0.0.1:5001/api/description?mode=accessibility"
+
+# 3. Get element tree for precise coordinates
+curl http://127.0.0.1:5001/api/structure
+
+# 4. Click a button at coordinates
+curl -X POST http://127.0.0.1:5001/api/action \
+  -H "Content-Type: application/json" \
+  -d '{"action": "click_at", "x": 480, "y": 300}'
+```
+
+### Full API reference
+
+See [screen_observer_api_reference.md](screen_observer_api_reference.md) for complete endpoint documentation including v2 agentic endpoints (snapshots, tracing, replay, scenarios, oracles, budgets, redaction).
+
+### LLM tool integration
+
+The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI function-calling schema documented in `screen_observer_api_reference.md`. Any system that supports OpenAI-compatible tool use can integrate OSScreenObserver using these tool schemas.
+
+---
+
 ## Architecture
 
 ```
