@@ -15,6 +15,8 @@ Both interfaces share the same underlying observer and can run simultaneously.
 
 OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). **No authentication is enforced** — keep the server on localhost or a trusted private network and do not expose it to untrusted networks without a reverse-proxy or firewall. Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
 
+> **Security:** The REST API has no authentication. When started with the default `--host 127.0.0.1`, it is only accessible locally. If you bind to `0.0.0.0` or any non-loopback address, the API — including `/api/action` which can control your desktop — will be accessible from the network. Only do this behind a trusted firewall or VPN.
+
 ### Startup modes
 
 ```bash
@@ -36,7 +38,7 @@ curl http://127.0.0.1:5001/api/healthz
 |--------|----------|--------------|
 | `GET` | `/api/windows` | List visible top-level windows |
 | `GET` | `/api/structure` | Full accessibility element tree (JSON) |
-| `GET` | `/api/description` | Combined screen description (accessibility + OCR + VLM) |
+| `GET` | `/api/description` | Combined screen description (accessibility + OCR + VLM, always combined mode — no mode parameter) |
 | `GET` | `/api/sketch` | ASCII spatial layout diagram |
 | `GET` | `/api/screenshot` | Base64-encoded PNG screenshot |
 | `POST` | `/api/action` | Execute click, type, key, or scroll action |
@@ -308,7 +310,7 @@ The web inspector exposes the following endpoints (all `GET` unless noted):
 |----------|--------|-------------|
 | `GET /api/windows` | — | List all visible windows |
 | `GET /api/structure` | `window_index` | Accessibility element tree (JSON) |
-| `GET /api/description` | `window_index` | Combined description (accessibility + OCR + VLM, whatever is available) |
+| `GET /api/description` | `window_index` | Combined description (accessibility + OCR + VLM, whatever is available). Always uses combined mode — no `mode` parameter is accepted. |
 | `GET /api/sketch` | `window_index`, `grid_width`, `grid_height`, `ocr` | ASCII layout sketch |
 | `GET /api/screenshot` | `window_index` | Screenshot as base64 PNG |
 | `GET /api/full_screenshot` | `window_index`, `grid_width`, `grid_height` | Screenshot + ASCII sketch (sketch uses OCR overlay) |

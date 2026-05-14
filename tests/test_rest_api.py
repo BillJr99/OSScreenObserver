@@ -1,4 +1,10 @@
-"""Core endpoint smoke tests for the Flask REST API.
+"""Core REST API endpoint smoke tests.
+
+Covers the core endpoints: windows, health, capabilities, screenshot,
+description, action, sketch, structure, monitors, tools, metrics, and
+the agentic v2 endpoints (observe, snapshot, budget_status, redaction_status,
+find_element, visible_areas). Broader tool-level coverage lives in the
+test_tools_pN suites.
 
 All tests use the `client` fixture from conftest.py which wires up a
 mock ScreenObserver so no real desktop or display is required.
@@ -81,8 +87,9 @@ def test_structure_with_window_index(client):
 
 
 def test_structure_invalid_window_index(client):
-    # The mock adapter falls back to the focused window when the index is out
-    # of range, so the call still succeeds rather than returning an error.
+    # The get_window_structure tool falls back to the focused window when index
+    # resolution fails — this is tool-level behavior, not adapter-specific.
+    # The call still succeeds rather than returning an error.
     r = client.get("/api/structure?window_index=9999")
     assert r.status_code == 200
     assert r.json["ok"] is True
