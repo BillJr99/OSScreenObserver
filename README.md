@@ -1,3 +1,4 @@
+
 # OS Screen Observer
 
 A prototype that exposes the operating system's UI accessibility tree,
@@ -13,7 +14,7 @@ Both interfaces share the same underlying observer and can run simultaneously.
 
 ## REST API
 
-OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). No authentication required. All responses are `application/json`.
+OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). No authentication required. Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
 
 ### Startup modes
 
@@ -42,7 +43,7 @@ curl http://127.0.0.1:5001/api/windows
 | `POST` | `/api/action` | Execute click, type, key, or scroll action |
 | `GET` | `/api/capabilities` | Server capabilities and platform info |
 | `GET` | `/api/healthz` | Health and uptime |
-| `GET` | `/api/metrics` | Prometheus-format metrics |
+| `GET` | `/api/metrics` | Prometheus-format metrics (`text/plain`) |
 
 ### Example workflow
 
@@ -428,7 +429,7 @@ screen_observer/
 ├── config.json        Runtime configuration
 ├── requirements.txt   Python dependencies
 ├── observer.py        Platform adapters + ScreenObserver facade
-├── ascii_renderer.py  ASCII spatial sketch renderer
+├── ascii_renderer.py  ASCII ASCII spatial sketch renderer
 ├── description.py     Textual description generator (tree / OCR / VLM)
 ├── mcp_server.py      MCP JSON-RPC 2.0 stdio server
 └── web_inspector.py   Flask REST API + embedded single-page UI
