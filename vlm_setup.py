@@ -23,6 +23,7 @@ once with `--mode inspect` to walk through setup.
 import json
 import os
 import sys
+import tempfile
 import urllib.request
 from typing import List, Optional, Tuple
 
@@ -104,13 +105,32 @@ def pick_model_paginated(models: List[str]) -> Optional[str]:
 
 
 def save_model_to_config(config_path: str, model: str) -> None:
-    """Persist vlm.model back to *config_path*, preserving all other keys."""
-    with open(config_path) as f:
+    """Persist vlm.model back to *config_path*, preserving all other keys.
+
+    Writes via a sibling temp file + atomic rename so an interrupted run
+    (Ctrl-C, OOM, full disk on the final flush) cannot leave the user
+    with a truncated config.json. Encoding is pinned to UTF-8 so the
+    custom `vlm.prompt` survives a round-trip on platforms with a
+    non-UTF-8 default locale (Windows in particular).
+    """
+    with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
     cfg.setdefault("vlm", {})["model"] = model
-    with open(config_path, "w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
+    dir_name = os.path.dirname(os.path.abspath(config_path)) or "."
+    fd, tmp = tempfile.mkstemp(
+        prefix=".config.", suffix=".json.tmp", dir=dir_name,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, config_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def ensure_vlm_model(config: dict, config_path: str, *,

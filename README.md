@@ -106,7 +106,7 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 │  ┌──────────────────────┐      ┌───────────────────────────────────┐    │
 │  │  Flask web inspector │      │  MCP stdio server                 │    │
 │  │  (background thread) │      │  (main thread, stdin/stdout)      │    │
-│  └────────────────────┘      └───────────────────────────────────┘    │
+│  └──────────┴───────────┘      └──────────────────┴────────────────┘    │
 │             │                                     │                     │
 │             └──────────────┬──────────────────────┘                     │
 │                            │                                            │

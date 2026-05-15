@@ -48,6 +48,36 @@ def test_resolve_ambiguous_by_role():
     assert r.ambiguous is True
 
 
+def test_resolve_descendant_index_is_per_parent():
+    """Subsequent descendant-axis steps must compute index= per parent,
+    not as a global count across the subtree (regression: //Window//Button[index=0]
+    should match the first Button under *each* nested Pane, not just the
+    very first Button found in flattened DFS order)."""
+    root = UIElement("r", "App", "Window", bounds=Bounds(0, 0, 100, 100))
+    pane_a = UIElement("r.0", "A", "Pane")
+    pane_b = UIElement("r.1", "B", "Pane")
+    btn_a1 = UIElement("r.0.0", "A1", "Button")
+    btn_a2 = UIElement("r.0.1", "A2", "Button")
+    btn_b1 = UIElement("r.1.0", "B1", "Button")
+    pane_a.children = [btn_a1, btn_a2]
+    pane_b.children = [btn_b1]
+    root.children = [pane_a, pane_b]
+
+    # CSS descendant combinator produces axis=descendant on a *subsequent*
+    # step, which is the exact path Copilot flagged in PR 11.
+    s = sel.parse("Window Button[index=0]")
+    r = sel.resolve(root, s, max_matches=10)
+    names = sorted(m.name for m in r.matches)
+    # First Button under Pane A is A1; first under Pane B is B1.
+    # Before the fix the global role counter only emitted ["A1"].
+    assert names == ["A1", "B1"]
+
+    # Same expectation under :nth-of-type(1) (1-indexed sibling rank).
+    s2 = sel.parse("Window Button:nth-of-type(1)")
+    r2 = sel.resolve(root, s2, max_matches=10)
+    assert sorted(m.name for m in r2.matches) == ["A1", "B1"]
+
+
 def test_resolve_index_predicate():
     r = sel.find(_tree(), "Window/Button[index=1]")
     assert len(r.matches) == 1
