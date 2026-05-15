@@ -13,11 +13,33 @@ Both interfaces share the same underlying observer and can run simultaneously.
 
 ## REST API
 
-OSScreenObserver exposes a full REST API at `http://127.0.0.1:5001` (configurable). **No authentication is enforced** — keep the server on localhost or a trusted private network and do not expose it to untrusted networks without a reverse-proxy or firewall. Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
+OSScreenObserver exposes a full REST API on port `5001` (configurable). Most `/api/*` endpoints return JSON; `/api/metrics` returns `text/plain` (Prometheus format) and `/` returns HTML.
 
-> **Security:** The REST API has no authentication. When started with the default `--host 127.0.0.1`, it is only accessible locally. If you bind to `0.0.0.0` or any non-loopback address, the API — including `/api/action` which can control your desktop — will be accessible from the network. Only do this behind a trusted firewall or VPN.
+> ### Security & Network Bind Defaults
 >
-> **CORS warning:** The Flask server enables permissive CORS for all routes by default (`CORS(app)`). This means any website running in the user's browser can send cross-origin requests to `http://127.0.0.1:5001`, including destructive `/api/action` calls (clicks, key presses, etc.). If you are running the web UI alongside the API, consider restricting CORS origins or adding an authentication/proxy layer before exposing the server to a multi-user environment.
+> **The default bind host is now `0.0.0.0` (all network interfaces) on port `5001`.**
+> This default is intended for **testing inside an isolated sandbox or container** (e.g., a disposable VM/dev container) where exposing the API to the container network is convenient and safe.
+>
+> **The REST API has NO authentication.** Any client that can reach the port can call every endpoint, including `/api/action`, which can click, type, and otherwise control the host desktop.
+>
+> **For local-only use on a workstation, override the bind to loopback:**
+>
+> ```bash
+> # Command-line override (recommended for local dev)
+> python main.py --mode both --host 127.0.0.1
+> ```
+>
+> Or edit `config.json`:
+>
+> ```json
+> {
+>   "web_ui": { "host": "127.0.0.1", "port": 5001 }
+> }
+> ```
+>
+> Do **not** expose the default `0.0.0.0` bind on a workstation connected to an untrusted network (home Wi-Fi, café, corporate LAN, public cloud VM) without a firewall, reverse proxy with authentication, or VPN in front of it.
+>
+> **CORS warning:** The Flask server enables permissive CORS for all routes by default (`CORS(app)`). Any website running in the user's browser can send cross-origin requests to the API — including destructive `/api/action` calls. Restrict CORS origins or add an authentication/proxy layer before exposing the server to a multi-user environment.
 
 ### Startup modes
 
@@ -444,18 +466,18 @@ screen_observer/
 
 | Feature | Windows | macOS | Linux | WSL |
 |---------|---------|-------|-------|-----|
-| Window enumeration | ✅ Full (`win32gui`) | ✅ (`Quartz` / AppleScript) | ✅ (`wmctrl`) | ✅ (`wmctrl` or PowerShell fallback) |
-| Accessibility tree | ✅ Full UIA + pywinauto | ✅ (`pyobjc` AXUIElement) | ✅ (`pyatspi`) | 🔶 Stub (no X11 without DISPLAY) |
-| Screenshot | ✅ `PrintWindow` → `mss` | ✅ `mss` | ✅ `mss` → `scrot` | ✅ `mss` (if DISPLAY) or PowerShell |
-| OCR | ✅ | ✅ | ✅ | ✅ |
-| VLM description | ✅ | ✅ | ✅ | ✅ |
-| ASCII sketch | ✅ | ✅ | ✅ | ✅ |
-| Input actions | ✅ | ✅ | ✅ | 🔶 (`pyautogui` needs DISPLAY) |
-| Mock mode | ✅ | ✅ | ✅ | ✅ |
+| Window enumeration | Full (`win32gui`) | (`Quartz` / AppleScript) | (`wmctrl`) | (`wmctrl` or PowerShell fallback) |
+| Accessibility tree | Full UIA + pywinauto | (`pyobjc` AXUIElement) | (`pyatspi`) | Stub (no X11 without DISPLAY) |
+| Screenshot | `PrintWindow` → `mss` | `mss` | `mss` → `scrot` | `mss` (if DISPLAY) or PowerShell |
+| OCR | yes | yes | yes | yes |
+| VLM description | yes | yes | yes | yes |
+| ASCII sketch | yes | yes | yes | yes |
+| Input actions | yes | yes | yes | (`pyautogui` needs DISPLAY) |
+| Mock mode | yes | yes | yes | yes |
 
 `get_screen_description` always returns everything the current platform supports
 in a single call — no mode parameter required. The web inspector's Description
-tab shows which sources ran (✓) and how to enable missing ones (✗).
+tab shows which sources ran and how to enable missing ones.
 
 All adapters degrade gracefully: if a library is not installed or a capability
 is unavailable, the server continues running and returns whatever it can.

@@ -47,7 +47,7 @@ import traceback
 # ─────────────────────────────────────────────────────────────────────────────
 
 _DEFAULT_CONFIG = {
-    "web_ui":  {"host": "127.0.0.1", "port": 5001, "debug": False},
+    "web_ui":  {"host": "0.0.0.0", "port": 5001, "debug": False},
     "mcp":     {"server_name": "os-screen-observer", "version": "0.1.0"},
     "ocr":     {"enabled": True, "tesseract_cmd": None, "min_confidence": 30},
     "vlm":     {"enabled": False, "model": "claude-sonnet-4-20250514", "max_tokens": 1500},
