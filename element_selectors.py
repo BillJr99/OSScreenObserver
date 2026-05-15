@@ -444,11 +444,9 @@ def resolve(root: Any, selector: Selector, *, max_matches: int = 10) -> ResolveR
 
     if first.axis == "descendant":
         # //role[...] — scan every descendant of root for step[0].
-        role_counter: Dict[str, int] = {}
+        # Use per-parent role counters so index=N is relative to siblings.
         initial: List[Any] = []
-        for elem in _descendants(root):
-            idx = role_counter.get(elem.role, 0)
-            role_counter[elem.role] = idx + 1
+        for elem, idx in _descendants_with_role_index(root):
             if first.matches(elem, idx):
                 initial.append(elem)
     else:
@@ -459,11 +457,8 @@ def resolve(root: Any, selector: Selector, *, max_matches: int = 10) -> ResolveR
             # Step[0] doesn't match root — fall back to descendant search so
             # that bare CSS selectors like button[aria-label*="X"] work without
             # requiring the caller to know the window role.
-            role_counter_fb: Dict[str, int] = {}
             initial = []
-            for elem in _descendants(root):
-                idx = role_counter_fb.get(elem.role, 0)
-                role_counter_fb[elem.role] = idx + 1
+            for elem, idx in _descendants_with_role_index(root):
                 if first.matches(elem, idx):
                     initial.append(elem)
 
@@ -499,6 +494,23 @@ def _descendants(elem: Any) -> List[Any]:
     for c in elem.children:
         out.append(c)
         out.extend(_descendants(c))
+    return out
+
+
+def _descendants_with_role_index(elem: Any) -> List[Tuple[Any, int]]:
+    """Yield (child, same_role_index_among_siblings) for every descendant.
+
+    The role index is computed relative to the child's own parent, so
+    ``index=N`` predicates match the N-th sibling of that role — not a
+    global count across the whole subtree.
+    """
+    out: List[Tuple[Any, int]] = []
+    for parent in [elem] + _descendants(elem):
+        role_counter: Dict[str, int] = {}
+        for child in parent.children:
+            idx = role_counter.get(child.role, 0)
+            role_counter[child.role] = idx + 1
+            out.append((child, idx))
     return out
 
 

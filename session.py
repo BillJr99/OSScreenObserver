@@ -72,6 +72,14 @@ class _TreeTokenStore:
                 return None
             if entry.expires_at < time.time():
                 self._by_token.pop(token, None)
+                ring = self._by_window.get(entry.window_uid)
+                if ring is not None:
+                    try:
+                        ring.remove(token)
+                    except ValueError:
+                        pass
+                    if not ring:
+                        self._by_window.pop(entry.window_uid, None)
                 return None
             return entry
 
