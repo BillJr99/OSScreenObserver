@@ -106,10 +106,10 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 │  ┌──────────────────────┐      ┌───────────────────────────────────┐    │
 │  │  Flask web inspector │      │  MCP stdio server                 │    │
 │  │  (background thread) │      │  (main thread, stdin/stdout)      │    │
-│  └──────────┬───────────┘      └──────────────────┬────────────────┘    │
+│  └──────────┤───────────┘      └──────────────────剌────────────────┘    │
 │             │                                     │                     │
 │             └──────────────┬──────────────────────┘                     │
-│                            ▼                                            │
+│                            │                                            │
 │                    ScreenObserver                                       │
 │                   /      |       \                                      │
 │          Accessibility  ASCII    Description                            │
@@ -410,7 +410,7 @@ contains `"success": false` with an explanatory error message — the click is
 ```json
 {
   "web_ui": {
-    "host":  "127.0.0.1",   // bind address for Flask
+    "host":  "0.0.0.0",     // bind address; use "127.0.0.1" for loopback-only
     "port":  5001,           // HTTP port
     "debug": false
   },
@@ -466,13 +466,13 @@ screen_observer/
 
 | Feature | Windows | macOS | Linux | WSL |
 |---------|---------|-------|-------|-----|
-| Window enumeration | Full (`win32gui`) | (`Quartz` / AppleScript) | (`wmctrl`) | (`wmctrl` or PowerShell fallback) |
-| Accessibility tree | Full UIA + pywinauto | (`pyobjc` AXUIElement) | (`pyatspi`) | Stub (no X11 without DISPLAY) |
+| Window enumeration | Full (`win32gui`) | Supported (`Quartz` / AppleScript) | Supported (`wmctrl`) | Supported (`wmctrl`) or PowerShell fallback |
+| Accessibility tree | Full (UIA + pywinauto) | Supported (`pyobjc` AXUIElement) | Supported (`pyatspi`) | Stub (no X11 without DISPLAY) |
 | Screenshot | `PrintWindow` → `mss` | `mss` | `mss` → `scrot` | `mss` (if DISPLAY) or PowerShell |
 | OCR | yes | yes | yes | yes |
 | VLM description | yes | yes | yes | yes |
 | ASCII sketch | yes | yes | yes | yes |
-| Input actions | yes | yes | yes | (`pyautogui` needs DISPLAY) |
+| Input actions | yes | yes | yes | yes (`pyautogui` needs DISPLAY) |
 | Mock mode | yes | yes | yes | yes |
 
 `get_screen_description` always returns everything the current platform supports
