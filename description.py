@@ -27,12 +27,29 @@ import json
 import logging
 import os
 import traceback
+import urllib.error
 import urllib.request
 from typing import Dict, List, Optional
 
 from observer import UIElement, WindowInfo
 
 logger = logging.getLogger(__name__)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Reject any HTTP redirect — a 302/303 on POST would silently become
+    a GET (dropping the screenshot body) and could forward content to an
+    unintended host. Surface the misconfiguration instead."""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        raise urllib.error.HTTPError(
+            req.full_url, code,
+            f"refusing redirect to {headers.get('Location')!r} "
+            f"(check vlm.base_url)",
+            headers, fp,
+        )
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -295,11 +312,16 @@ class DescriptionGenerator:
         url = base_url.rstrip("/") + "/api/v1/chat/completions"
         try:
             req = urllib.request.Request(
-                url, data=json.dumps(payload).encode(),
+                url, data=json.dumps(payload).encode("utf-8"),
                 headers=headers, method="POST",
             )
-            with urllib.request.urlopen(req, timeout=240) as resp:
-                data = json.loads(resp.read().decode())
+            # urllib follows redirects by default and would silently convert
+            # a 302/303 POST into a GET, dropping the screenshot payload (and
+            # potentially forwarding it to an unintended host). Refuse any
+            # redirect so misconfigured vlm.base_url fails loudly instead.
+            opener = urllib.request.build_opener(_NoRedirectHandler)
+            with opener.open(req, timeout=240) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
             return data["choices"][0]["message"]["content"]
         except Exception as e:
             print(f"[DescriptionGenerator:from_vlm] {e}")

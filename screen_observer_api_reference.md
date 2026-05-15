@@ -123,7 +123,7 @@ SCREEN_TOOLS = [
                 "Return a combined textual description of the window using all "
                 "available analysis sources: accessibility tree prose, OCR text "
                 "(if pytesseract is installed), and VLM interpretation (if "
-                "vlm.enabled=true with a configured vlm.base_url and vlm.model). "
+                "vlm.enabled=true and vlm.base_url + vlm.model are configured). "
                 "The mode parameter is accepted for compatibility but is always "
                 "treated as 'combined' — all enabled sources are included."
             ),

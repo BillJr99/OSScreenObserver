@@ -466,21 +466,27 @@ def resolve(root: Any, selector: Selector, *, max_matches: int = 10) -> ResolveR
         truncated = initial[:max_matches]
         return ResolveResult(matches=truncated, ambiguous=len(initial) > 1)
 
-    # Walk the rest.
+    # Walk the rest. For axis=child the index is computed among siblings
+    # of *parent*. For axis=descendant we recurse through every
+    # descendant of *parent* but the index of each candidate is still
+    # measured against its own parent's children — never globally across
+    # the subtree — so that selectors like `Window Pane Button[index=0]`
+    # match the first Button under each nested Pane.
     current: List[Any] = initial
     for step in selector.steps[1:]:
         next_matches: List[Any] = []
         for parent in current:
-            candidates = (parent.children
-                          if step.axis == "child"
-                          else _descendants(parent))
-            # Compute same-role index per parent group.
-            step_role_counter: Dict[str, int] = {}
-            for child in candidates:
-                idx = step_role_counter.get(child.role, 0)
-                step_role_counter[child.role] = idx + 1
-                if step.matches(child, idx):
-                    next_matches.append(child)
+            if step.axis == "child":
+                step_role_counter: Dict[str, int] = {}
+                for child in parent.children:
+                    idx = step_role_counter.get(child.role, 0)
+                    step_role_counter[child.role] = idx + 1
+                    if step.matches(child, idx):
+                        next_matches.append(child)
+            else:
+                for elem, idx in _descendants_with_role_index(parent):
+                    if step.matches(elem, idx):
+                        next_matches.append(elem)
         current = next_matches
         if not current:
             return ResolveResult(matches=[], ambiguous=False)
@@ -498,11 +504,11 @@ def _descendants(elem: Any) -> List[Any]:
 
 
 def _descendants_with_role_index(elem: Any) -> List[Tuple[Any, int]]:
-    """Yield (child, same_role_index_among_siblings) for every descendant.
+    """Return a list of (descendant, same_role_index_among_siblings) pairs.
 
-    The role index is computed relative to the child's own parent, so
-    ``index=N`` predicates match the N-th sibling of that role — not a
-    global count across the whole subtree.
+    The role index is computed relative to the descendant's own parent,
+    so ``index=N`` predicates match the N-th sibling of that role — not
+    a global count across the whole subtree.
     """
     out: List[Tuple[Any, int]] = []
     for parent in [elem] + _descendants(elem):
