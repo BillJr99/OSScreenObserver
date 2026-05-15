@@ -50,7 +50,11 @@ _DEFAULT_CONFIG = {
     "web_ui":  {"host": "0.0.0.0", "port": 5001, "debug": False},
     "mcp":     {"server_name": "os-screen-observer", "version": "0.1.0"},
     "ocr":     {"enabled": True, "tesseract_cmd": None, "min_confidence": 30},
-    "vlm":     {"enabled": False, "model": "claude-sonnet-4-20250514", "max_tokens": 1500},
+    "vlm":     {"enabled": False,
+                "base_url": "http://localhost:3000",
+                "api_key":  None,
+                "model":    None,
+                "max_tokens": 1500},
     "ascii_sketch": {"grid_width": 110, "grid_height": 38, "unicode_box": True},
     "tree":    {"max_depth": 8},
     "logging": {"level": "INFO"},
@@ -184,6 +188,20 @@ def main() -> None:
 
     setup_logging(config)
     logger = logging.getLogger("main")
+
+    # ── VLM model setup ──────────────────────────────────────────────────────
+    # In `inspect` mode stdin is free, so we can prompt the operator to pick
+    # a model and persist the choice. In `mcp`/`both` mode stdin is owned by
+    # the MCP framing channel, so we must not prompt; VLM is silently
+    # disabled for the run if no model is configured.
+    try:
+        from vlm_setup import ensure_vlm_model
+        ensure_vlm_model(
+            config, args.config,
+            interactive_ok=(args.mode == "inspect"),
+        )
+    except Exception as e:
+        logger.warning(f"[main] VLM setup skipped: {e}")
 
     # ── Lazy imports (so logging is configured before module-level init runs)
     try:

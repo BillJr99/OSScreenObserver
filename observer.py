@@ -1183,7 +1183,8 @@ class ScreenObserver:
                 "occlusion_detection": is_windows or is_mock or _has("Quartz") or _has("Xlib"),
                 "drag":                True,
                 "ocr":                 _has("pytesseract"),
-                "vlm":                 _has("anthropic"),
+                "vlm":                 bool((self.config.get("vlm") or {}).get("enabled")
+                                            and (self.config.get("vlm") or {}).get("model")),
                 "redaction":           True,
                 "scenarios":           is_mock,
                 "tracing":             True,

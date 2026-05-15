@@ -117,7 +117,7 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 │           (observer)             (description)                          │
 │                                  ┌──── accessibility (tree prose)       │
 │                                  ├──── ocr (Tesseract)                  │
-│                                  └──── vlm (Claude Vision)              │
+│                                  └──── vlm (OpenWebUI vision model)     │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -193,11 +193,30 @@ Point the server at it in `config.json`:
 If the JSON parser rejects the file (forgotten backslash escape) the server
 logs a `[main:load_config]` error and reports `config_error` at `GET /api/healthz`.
 
-**VLM / Claude Vision (optional, all platforms)**
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-# Then set vlm.enabled = true in config.json
+**VLM (optional, all platforms)**
+
+The VLM modality is reached through an OpenWebUI-compatible OpenAI
+chat-completions endpoint, which can front any vision-capable model
+(Claude via OpenWebUI's Anthropic integration, GPT-4o, etc.). No
+provider SDK is required.
+
+```jsonc
+// config.json
+"vlm": {
+  "enabled":  true,
+  "base_url": "http://localhost:3000",   // your OpenWebUI URL
+  "api_key":  null,                       // or set $OWUI_API_KEY
+  "model":    null,                       // null → pick interactively on first launch
+  "max_tokens": 1500
+}
 ```
+
+The first time you run `python main.py --mode inspect` with
+`vlm.enabled=true` and `vlm.model=null`, OSScreenObserver fetches the
+model list from `{base_url}/api/v1/models`, shows a paginated picker,
+and saves your choice back to `config.json`. In `mcp`/`both` mode the
+picker is suppressed (stdin is owned by the MCP framing channel); set
+`vlm.model` directly in `config.json` for non-interactive use.
 
 ---
 
@@ -426,8 +445,10 @@ The following shows the built-in defaults (when no `config.json` is provided). T
     "min_confidence":  30      // 0–100; words below this threshold are discarded
   },
   "vlm": {
-    "enabled":    false,       // set true + ANTHROPIC_API_KEY to enable
-    "model":      "claude-sonnet-4-20250514",
+    "enabled":    false,       // OpenWebUI-compatible chat-completions endpoint
+    "base_url":   "http://localhost:3000",
+    "api_key":    null,         // or set $OWUI_API_KEY
+    "model":      null,         // null → interactive picker on first --mode inspect run
     "max_tokens": 1500
   },
   "ascii_sketch": {

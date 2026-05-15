@@ -15,7 +15,9 @@
   },
   "vlm": {
     "enabled": false,
-    "model": "claude-sonnet-4-20250514",
+    "base_url": "http://localhost:3000",
+    "api_key": null,
+    "model": null,
     "max_tokens": 1500,
     "prompt": "You are analyzing a computer screen for an agentic AI system. Describe what you see in structured detail: (1) What application(s) are visible? (2) What is the main content or task shown? (3) What UI controls are present and in what state? (4) What is the spatial layout? (5) What is the current focus or active element? (6) What actions would be most natural to take next? Be specific and use exact names of buttons, labels, and fields as they appear."
   },

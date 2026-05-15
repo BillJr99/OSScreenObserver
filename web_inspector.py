@@ -657,9 +657,9 @@ function buildSourcesHdr(caps, sections) {
     { key: 'ocr', label: 'OCR (Tesseract)',
       ok: !!sup.ocr,
       howto: 'Install Tesseract binary, pip install pytesseract, set ocr.enabled=true in config.json' },
-    { key: 'vlm', label: 'VLM (Claude Vision)',
+    { key: 'vlm', label: 'VLM (OpenWebUI vision model)',
       ok: !!sup.vlm,
-      howto: 'Set ANTHROPIC_API_KEY and vlm.enabled=true in config.json' },
+      howto: 'Set vlm.enabled=true, vlm.base_url, and vlm.model in config.json (or run `python main.py --mode inspect` once to pick a model)' },
   ];
   let html = '<div class="desc-sources">';
   for (const d of defs) {
