@@ -106,7 +106,7 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 │  ┌──────────────────────┐      ┌───────────────────────────────────┐    │
 │  │  Flask web inspector │      │  MCP stdio server                 │    │
 │  │  (background thread) │      │  (main thread, stdin/stdout)      │    │
-│  └──────────┤───────────┘      └──────────────────剌────────────────┘    │
+│  └────────────────────┘      └───────────────────────────────────┘    │
 │             │                                     │                     │
 │             └──────────────┬──────────────────────┘                     │
 │                            │                                            │
@@ -407,7 +407,9 @@ contains `"success": false` with an explanatory error message — the click is
 
 ## Configuration Reference (`config.json`)
 
-```json
+The following shows the built-in defaults (when no `config.json` is provided). The shipped `config.json` overrides `web_ui.host` to `127.0.0.1` for loopback-only access.
+
+```jsonc
 {
   "web_ui": {
     "host":  "0.0.0.0",     // bind address; use "127.0.0.1" for loopback-only
