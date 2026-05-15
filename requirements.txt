@@ -12,7 +12,8 @@ flask>=3.0.0
 flask-cors>=4.0.0
 mss>=9.0.0
 Pillow>=10.0.0
-anthropic>=0.40.0
+# VLM is reached through any OpenWebUI-compatible OpenAI chat-completions
+# endpoint via stdlib `urllib` — no provider SDK is required here.
 
 # OCR (optional but recommended) — also install the Tesseract binary itself:
 #   Windows: https://github.com/tesseract-ocr/tesseract/releases  +  in

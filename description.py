@@ -11,17 +11,23 @@ Three modalities, each with a distinct cost/fidelity profile:
                    is rendered but not in the accessibility tree. Moderate
                    latency; requires Pillow + pytesseract.
 
-  vlm            — Claude Vision caption of a screenshot. Richest description;
-                   includes layout, iconography, color cues, and contextual
-                   interpretation. Requires ANTHROPIC_API_KEY and network.
+  vlm            — Vision-language-model caption of a screenshot. Richest
+                   description; includes layout, iconography, color cues, and
+                   contextual interpretation. Reached through an
+                   OpenWebUI-compatible OpenAI chat-completions endpoint;
+                   requires vlm.base_url + vlm.model in config.json (and an
+                   api_key if the endpoint demands one).
 
 These can be used individually or combined via combined().
 """
 
 import base64
 import io
+import json
 import logging
+import os
 import traceback
+import urllib.request
 from typing import Dict, List, Optional
 
 from observer import UIElement, WindowInfo
@@ -226,55 +232,75 @@ class DescriptionGenerator:
                     f"on_PATH={diag.get('path_discovered')!r}.  "
                     f"{INSTALL_HINT}]")
 
-    # ── VLM (Claude Vision) ───────────────────────────────────────────────────
+    # ── VLM (OpenWebUI-compatible chat completions) ──────────────────────────
 
     def from_vlm(self, screenshot_bytes: bytes) -> str:
         """
-        Generate a rich description via Claude's vision capability.
+        Generate a rich description via a vision-capable LLM exposed through
+        an OpenWebUI-compatible OpenAI chat-completions endpoint.
 
-        Sends the screenshot to the configured Claude model with a structured
-        analysis prompt designed for AI agent consumption. Requires
-        ANTHROPIC_API_KEY to be set in the environment and vlm.enabled = true
-        in config.json.
+        The screenshot is sent as a base64 `image_url` content part to
+        `{vlm.base_url}/api/v1/chat/completions` using `vlm.model`. The
+        endpoint can front any vision model OpenWebUI supports (e.g. Claude
+        via the Anthropic integration, GPT-4o, etc.) — OSScreenObserver
+        itself no longer depends on the Anthropic SDK or ANTHROPIC_API_KEY.
+
+        Required config:
+          vlm.enabled  = true
+          vlm.base_url = e.g. "http://localhost:3000"
+          vlm.model    = a model id available through the endpoint
+          vlm.api_key  = optional; falls back to $OWUI_API_KEY
         """
         if not self.vlm_cfg.get("enabled", False):
             return (
                 "[VLM disabled — set vlm.enabled = true in config.json "
-                "and ensure ANTHROPIC_API_KEY is set]"
+                "and configure vlm.base_url / vlm.model]"
             )
 
+        model = self.vlm_cfg.get("model")
+        if not model:
+            return (
+                "[VLM model not configured — run `python main.py --mode "
+                "inspect` once to pick a model, or set vlm.model in "
+                "config.json]"
+            )
+
+        base_url   = self.vlm_cfg.get("base_url") or "http://localhost:3000"
+        api_key    = (self.vlm_cfg.get("api_key")
+                      or os.environ.get("OWUI_API_KEY", ""))
+        prompt_txt = self.vlm_cfg.get(
+            "prompt",
+            "Describe what is on this computer screen in structured detail "
+            "for an AI agent.",
+        )
+        max_tokens = self.vlm_cfg.get("max_tokens", 1500)
+
+        b64_img = base64.b64encode(screenshot_bytes).decode()
+        payload = {
+            "model":      model,
+            "max_tokens": max_tokens,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/png;base64,{b64_img}"}},
+                    {"type": "text", "text": prompt_txt},
+                ],
+            }],
+        }
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        url = base_url.rstrip("/") + "/api/v1/chat/completions"
         try:
-            import anthropic
-
-            client  = anthropic.Anthropic()
-            b64_img = base64.b64encode(screenshot_bytes).decode()
-            prompt  = self.vlm_cfg.get(
-                "prompt",
-                "Describe what is on this computer screen in structured detail for an AI agent.",
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode(),
+                headers=headers, method="POST",
             )
-
-            response = client.messages.create(
-                model      = self.vlm_cfg.get("model", "claude-sonnet-4-20250514"),
-                max_tokens = self.vlm_cfg.get("max_tokens", 1500),
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type":       "base64",
-                                "media_type": "image/png",
-                                "data":       b64_img,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
-            )
-            return response.content[0].text
-
-        except ImportError:
-            return "[anthropic package not installed — run: pip install anthropic]"
+            with urllib.request.urlopen(req, timeout=240) as resp:
+                data = json.loads(resp.read().decode())
+            return data["choices"][0]["message"]["content"]
         except Exception as e:
             print(f"[DescriptionGenerator:from_vlm] {e}")
             traceback.print_exc()

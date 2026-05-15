@@ -123,7 +123,7 @@ SCREEN_TOOLS = [
                 "Return a combined textual description of the window using all "
                 "available analysis sources: accessibility tree prose, OCR text "
                 "(if pytesseract is installed), and VLM interpretation (if "
-                "ANTHROPIC_API_KEY and vlm.enabled=true are configured). "
+                "vlm.enabled=true with a configured vlm.base_url and vlm.model). "
                 "The mode parameter is accepted for compatibility but is always "
                 "treated as 'combined' — all enabled sources are included."
             ),
@@ -493,9 +493,12 @@ source: accessibility tree, OCR if configured, VLM if configured).
 ```
 
 **Notes:**
-- `vlm` requires `ANTHROPIC_API_KEY` in the environment and
-  `"vlm": {"enabled": true}` in `config.json`. Returns a disabled message
-  string if not configured.
+- `vlm` requires `vlm.enabled=true`, a reachable `vlm.base_url` (an
+  OpenWebUI-compatible OpenAI chat-completions endpoint), and a
+  `vlm.model` selected from that endpoint. The api key, if needed, can
+  live in `vlm.api_key` or the `OWUI_API_KEY` environment variable.
+  Returns a disabled / unconfigured message string if any of those are
+  missing.
 - `ocr` requires `pytesseract` installed and the Tesseract binary either on
   the system PATH or set as `ocr.tesseract_cmd` in `config.json`. On Windows
   the installer does **not** add it to PATH — set the full path explicitly,
