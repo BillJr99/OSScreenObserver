@@ -102,7 +102,10 @@ def load_config(path: str) -> dict:
     _CONFIG_PATH_USED = path
     _bootstrap_config_from_example(path)
     try:
-        with open(path) as f:
+        # Pin UTF-8 — the bundled example contains non-ASCII (box-drawing
+        # and role-glyph characters in inline doc strings) that would
+        # otherwise fail to decode under Windows's cp1252 default.
+        with open(path, encoding="utf-8") as f:
             raw = f.read()
         try:
             cfg = json.loads(raw)

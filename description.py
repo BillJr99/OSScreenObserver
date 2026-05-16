@@ -190,8 +190,19 @@ class DescriptionGenerator:
         try:
             import pytesseract
             from PIL import Image
-            from ocr_util import configure as _ocr_configure
+            from ocr_util import configure as _ocr_configure, diagnose as _ocr_diag, INSTALL_HINT
             _ocr_configure(self.config)
+
+            # Pre-flight: if neither the configured path nor PATH yields a
+            # working tesseract binary, return a clean install hint instead
+            # of letting pytesseract raise TesseractNotFoundError (which
+            # surfaces a long, scary stack trace even though we catch it).
+            diag = _ocr_diag(self.config)
+            if not diag.get("configured_path_exists") and not diag.get("path_discovered"):
+                return (f"[OCR unavailable: tesseract binary not found "
+                        f"(configured={diag.get('configured_path')!r}, "
+                        f"on_PATH={diag.get('path_discovered')!r}). "
+                        f"{INSTALL_HINT}]")
 
             min_conf = self.ocr_cfg.get("min_confidence", 30)
             img  = Image.open(io.BytesIO(screenshot_bytes))
@@ -232,16 +243,16 @@ class DescriptionGenerator:
             return ("[pytesseract not installed — run `pip install pytesseract`. "
                     f"{_HINT}]")
         except Exception as e:
-            print(f"[DescriptionGenerator:from_ocr] {e}")
-            traceback.print_exc()
-            # Surface the diagnostic so the user can see what tesseract_cmd
-            # resolved to (or didn't), plus the install/config hint.
+            # Known "tesseract missing" condition is already handled above;
+            # anything else is unexpected enough to log once at WARNING
+            # without dumping a full traceback on every request.
             try:
                 from ocr_util import diagnose as _ocr_diag, INSTALL_HINT
                 diag = _ocr_diag(self.config)
             except Exception:
                 diag = {}
                 INSTALL_HINT = ""
+            logger.warning("[DescriptionGenerator:from_ocr] %s", e)
             return (f"[OCR failed: {e}; "
                     f"tesseract_cmd={diag.get('configured_path')!r}, "
                     f"exists={diag.get('configured_path_exists')}, "
