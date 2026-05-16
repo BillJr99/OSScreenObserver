@@ -1241,20 +1241,27 @@ def create_web_app(
             if request.args.get("ocr", "").strip() in ("1", "true", "yes"):
                 shot_bytes = observer.get_screenshot(hwnd)
 
-            sketch = renderer.render(
+            want_structured = request.args.get("structured", "").strip() in (
+                "1", "true", "yes",
+            )
+            result = renderer.render_structured(
                 root             = tree,
                 screen_bounds    = ref,
                 grid_width       = gw,
                 grid_height      = gh,
                 screenshot_bytes = shot_bytes,
             )
-            return jsonify({
+            payload = {
                 "window":      info.title if info else "(focused)",
                 "grid_width":  gw or renderer.default_width,
                 "grid_height": gh or renderer.default_height,
                 "ocr_overlay": shot_bytes is not None,
-                "sketch":      sketch,
-            })
+                "sketch":      result["sketch"],
+            }
+            if want_structured:
+                payload["elements"] = result["elements"]
+                payload["legend"]   = result["legend"]
+            return jsonify(payload)
         except Exception as e:
             print(f"[web_inspector:/api/sketch] {e}")
             traceback.print_exc()

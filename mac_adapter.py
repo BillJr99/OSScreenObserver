@@ -55,6 +55,11 @@ def install_into(observer: Any) -> bool:
     AX_SIZE = "AXSize"
     AX_ENABLED = "AXEnabled"
     AX_FOCUSED = "AXFocused"
+    AX_MIN_VALUE  = "AXMinValue"
+    AX_MAX_VALUE  = "AXMaxValue"
+    AX_SELECTED   = "AXSelected"
+    AX_EXPANDED   = "AXExpanded"
+    AX_IDENTIFIER = "AXIdentifier"
 
     def _attr(elem, name):
         try:
@@ -84,12 +89,37 @@ def install_into(observer: Any) -> bool:
         value = str(value_raw) if value_raw is not None else None
         desc = _attr(elem, AX_DESCRIPTION)
         bounds = _bounds(elem)
+        # Extended a11y signals — None when AX does not expose the attribute.
+        def _opt_float(a):
+            v = _attr(elem, a)
+            try:
+                return float(v) if v is not None else None
+            except Exception:
+                return None
+
+        def _opt_bool(a):
+            v = _attr(elem, a)
+            return bool(v) if v is not None else None
+
+        ident = _attr(elem, AX_IDENTIFIER)
+        # AXValue doubles as a numeric for sliders / progress; try to parse.
+        try:
+            value_now = float(value_raw) if value_raw is not None else None
+        except Exception:
+            value_now = None
+
         ui = UIElement(
             element_id=eid, name=name, role=role, value=value,
             bounds=bounds,
             enabled=bool(_attr(elem, AX_ENABLED) or True),
             focused=bool(_attr(elem, AX_FOCUSED) or False),
             description=str(desc) if desc else None,
+            selected=_opt_bool(AX_SELECTED),
+            expanded=_opt_bool(AX_EXPANDED),
+            value_now=value_now,
+            value_min=_opt_float(AX_MIN_VALUE),
+            value_max=_opt_float(AX_MAX_VALUE),
+            identifier=str(ident) if ident else None,
         )
         if depth >= max_depth:
             return ui
