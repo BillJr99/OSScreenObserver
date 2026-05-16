@@ -1191,6 +1191,10 @@ class ScreenObserver:
                 "replay":              True,
                 "image_blur":          _has("PIL"),
                 "wsl_powershell":      is_wsl,
+                # Action capabilities always present via REST + MCP.
+                "bring_to_foreground": True,
+                "element_targeting":   bool(ax_tree),  # click/focus/invoke/set_value via element_id
+                "observe_with_diff":   True,            # /api/observe returns diff token
             },
             "config": {
                 "tree_max_depth": (self.config.get("tree", {}) or {}).get("max_depth", 8),
