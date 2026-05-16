@@ -152,7 +152,12 @@ pip install pyobjc          # enables full AX accessibility tree
 
 **Linux**
 ```bash
-sudo apt install wmctrl     # window enumeration
+# Window enumeration: install wmctrl (Debian/Ubuntu shown; use the
+# equivalent for your distro: `dnf install wmctrl`, `pacman -S wmctrl`,
+# `zypper install wmctrl`, etc.).
+sudo apt install wmctrl
+# If wmctrl is unavailable, the adapter falls back to python-xlib:
+#   pip install python-xlib
 pip install pyatspi         # enables full AT-SPI accessibility tree (optional)
 ```
 
