@@ -11,3 +11,8 @@ build/
 .venv
 venv/
 *.log
+
+# Local runtime configuration — copy config.json.example → config.json
+# and edit for your machine. The committed example is the source of
+# truth for keys, defaults, and inline documentation.
+config.json

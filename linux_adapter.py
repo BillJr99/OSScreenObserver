@@ -70,13 +70,37 @@ def install_into(observer: Any) -> bool:
             states = node.getState().getStates()
             enabled = pyatspi.STATE_ENABLED in states
             focused = pyatspi.STATE_FOCUSED in states
+            selected = (pyatspi.STATE_SELECTED in states
+                        or pyatspi.STATE_CHECKED in states)
+            expanded = pyatspi.STATE_EXPANDED in states if (
+                pyatspi.STATE_EXPANDABLE in states) else None
+            # STATE_SELECTED on non-selectable widgets is meaningless; only
+            # set the flag when SELECTABLE / CHECKABLE is present too.
+            if not (pyatspi.STATE_SELECTABLE in states
+                    or pyatspi.STATE_CHECKABLE in states):
+                selected = None
         except Exception:
             enabled = True
             focused = False
+            selected = None
+            expanded = None
+
+        # AT-SPI IValue exposes numeric current/min/max for sliders & progress.
+        value_now = value_min = value_max = None
+        try:
+            iv = node.queryValue()
+            value_now = float(iv.currentValue)
+            value_min = float(iv.minimumValue)
+            value_max = float(iv.maximumValue)
+        except Exception:
+            pass
+
         ui = UIElement(
             element_id=eid, name=name, role=role, value=value,
             bounds=_bounds(node), enabled=enabled, focused=focused,
             description=desc,
+            selected=selected, expanded=expanded,
+            value_now=value_now, value_min=value_min, value_max=value_max,
         )
         if depth >= max_depth:
             return ui

@@ -1069,18 +1069,22 @@ class MCPServer:
             return {"error": "Could not retrieve element tree"}
 
         ref = info.bounds if info else tree.bounds
-        sketch = self.renderer.render(
+        result = self.renderer.render_structured(
             root          = tree,
             screen_bounds = ref,
             grid_width    = args.get("grid_width"),
             grid_height   = args.get("grid_height"),
         )
-        return {
+        out = {
             "window": info.title if info else "(focused)",
             "grid_width":  args.get("grid_width",  self.renderer.default_width),
             "grid_height": args.get("grid_height", self.renderer.default_height),
-            "sketch": sketch,
+            "sketch": result["sketch"],
         }
+        if args.get("structured"):
+            out["elements"] = result["elements"]
+            out["legend"]   = result["legend"]
+        return out
 
     def _t_screenshot(self, hwnd, info) -> Dict:
         import base64

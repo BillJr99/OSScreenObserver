@@ -37,6 +37,7 @@ never polluted regardless of mode.
 import argparse
 import json
 import logging
+import os
 import sys
 import threading
 import traceback
@@ -67,10 +68,39 @@ _CONFIG_LOAD_ERROR: str = ""
 _CONFIG_PATH_USED: str = ""
 
 
+def _bootstrap_config_from_example(path: str) -> None:
+    """When *path* does not exist, copy the bundled config.json.example
+    sibling into place so first-run users get a working file they can
+    edit. config.json is gitignored; the example is the source of truth
+    for keys & defaults. Silently no-ops if the example is missing too
+    (load_config will then fall back to built-in defaults)."""
+    if os.path.exists(path):
+        return
+    example = os.path.join(os.path.dirname(os.path.abspath(path)),
+                           "config.json.example")
+    if not os.path.exists(example):
+        # Also try alongside this script — useful when --config points
+        # somewhere outside the repo.
+        example = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "config.json.example")
+    if not os.path.exists(example):
+        return
+    try:
+        import shutil
+        shutil.copyfile(example, path)
+        print(f"[main:load_config] {path!r} not found; seeded from "
+              f"{example!r}.  Edit it to customize OCR/VLM/sketch settings.",
+              file=sys.stderr)
+    except Exception as e:
+        print(f"[main:load_config] could not seed {path!r} from "
+              f"{example!r}: {e}", file=sys.stderr)
+
+
 def load_config(path: str) -> dict:
     global _CONFIG_LOAD_ERROR, _CONFIG_PATH_USED
     _CONFIG_LOAD_ERROR = ""
     _CONFIG_PATH_USED = path
+    _bootstrap_config_from_example(path)
     try:
         with open(path) as f:
             raw = f.read()

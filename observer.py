@@ -87,9 +87,20 @@ class UIElement:
     keyboard_shortcut: Optional[str] = None
     description: Optional[str] = None
     children: List["UIElement"] = field(default_factory=list)
+    # Extended a11y signals — None means "adapter could not determine".
+    # Populated where the platform exposes the pattern (UIA SelectionItem /
+    # ExpandCollapse / RangeValue, AX AXValue/AXMinValue/AXMaxValue, AT-SPI
+    # STATE_SELECTED / STATE_EXPANDED / IValue) and consumed by the ASCII
+    # renderer for role-aware glyphs and the structured sidecar.
+    selected:   Optional[bool]  = None
+    expanded:   Optional[bool]  = None
+    value_now:  Optional[float] = None
+    value_min:  Optional[float] = None
+    value_max:  Optional[float] = None
+    identifier: Optional[str]   = None
 
     def to_dict(self) -> Dict:
-        return {
+        d: Dict[str, Any] = {
             "id": self.element_id,
             "name": self.name,
             "role": self.role,
@@ -101,6 +112,14 @@ class UIElement:
             "description": self.description,
             "children": [c.to_dict() for c in self.children],
         }
+        # Omit extended fields when unset so existing API consumers do not
+        # see a flood of nulls; include them when populated.
+        for k in ("selected", "expanded", "value_now", "value_min",
+                  "value_max", "identifier"):
+            v = getattr(self, k)
+            if v is not None:
+                d[k] = v
+        return d
 
     def flat_list(self) -> List["UIElement"]:
         """Return all elements in this subtree as a flat list (DFS order)."""
@@ -224,6 +243,19 @@ class MockAdapter:
         vscroll = UIElement("root.3", "Vertical ScrollBar", "ScrollBar",
                             bounds=Bounds(864, 82, 18, 532))
         root.children.append(vscroll)
+
+        # Progress bar — exercises value_now/min/max for the role glyph path.
+        root.children.append(UIElement(
+            "root.5", "Saving", "ProgressBar",
+            bounds=Bounds(560, 600, 200, 10),
+            value_now=40.0, value_min=0.0, value_max=100.0,
+        ))
+
+        # Word-wrap toggle checkbox — exercises selected=True path.
+        root.children.append(UIElement(
+            "root.6", "Word Wrap", "CheckBox",
+            bounds=Bounds(80, 636, 120, 18), selected=True,
+        ))
 
         # Status bar
         sb = UIElement("root.4", "Status Bar", "StatusBar",
@@ -455,15 +487,21 @@ class WindowsAdapter:
             max_depth = self.config.get("tree", {}).get("max_depth", 8)
 
             # UIA property IDs (UIAutomationClient.h)
-            _NAME        = 30005
-            _CTRL_TYPE   = 30003
-            _ENABLED     = 30010
-            _FOCUSED     = 30008
-            _VALUE       = 30045
-            _ACCESS_KEY  = 30023   # keyboard mnemonic, e.g. "Alt+F"
-            _ACCEL_KEY   = 30022   # accelerator, e.g. "Ctrl+Z"
-            _HELP_TEXT   = 30013   # tooltip / description
-            _SCOPE_CHILDREN = 0x2
+            _NAME            = 30005
+            _CTRL_TYPE       = 30003
+            _ENABLED         = 30010
+            _FOCUSED         = 30008
+            _VALUE           = 30045
+            _ACCESS_KEY      = 30023   # keyboard mnemonic, e.g. "Alt+F"
+            _ACCEL_KEY       = 30022   # accelerator, e.g. "Ctrl+Z"
+            _HELP_TEXT       = 30013   # tooltip / description
+            _AUTOMATION_ID   = 30011
+            _RANGE_VALUE     = 30047
+            _RANGE_MIN       = 30049
+            _RANGE_MAX       = 30050
+            _IS_SELECTED     = 30079
+            _EXPAND_STATE    = 30084   # 0=collapsed 1=expanded 2=partial 3=leaf
+            _SCOPE_CHILDREN  = 0x2
 
             def _prop(elem, pid, default=None):
                 try:
@@ -487,11 +525,40 @@ class WindowsAdapter:
                 # Keyboard shortcut: prefer access key, fall back to accelerator.
                 ks = _prop(elem, _ACCESS_KEY) or _prop(elem, _ACCEL_KEY) or None
                 desc = _prop(elem, _HELP_TEXT) or None
+                aid = _prop(elem, _AUTOMATION_ID) or None
+                # RangeValue pattern: slider / progress / scrollbar
+                vn = _prop(elem, _RANGE_VALUE)
+                vmin = _prop(elem, _RANGE_MIN)
+                vmax = _prop(elem, _RANGE_MAX)
+                # SelectionItem.IsSelected: checkbox / radio / tab / menuitem
+                sel_raw = _prop(elem, _IS_SELECTED)
+                sel = bool(sel_raw) if sel_raw is not None else None
+                # ExpandCollapse: combobox / treeitem / menuitem
+                exp_raw = _prop(elem, _EXPAND_STATE)
+                if exp_raw in (0, 1):
+                    exp = bool(exp_raw)
+                else:
+                    exp = None
+                try:
+                    vn_f = float(vn) if vn is not None else None
+                except Exception:
+                    vn_f = None
+                try:
+                    vmin_f = float(vmin) if vmin is not None else None
+                except Exception:
+                    vmin_f = None
+                try:
+                    vmax_f = float(vmax) if vmax is not None else None
+                except Exception:
+                    vmax_f = None
                 node = UIElement(
                     element_id=elem_id, name=name, role=role, value=value,
                     bounds=bounds, enabled=enabled, focused=focused,
                     keyboard_shortcut=ks or None,
                     description=desc or None,
+                    selected=sel, expanded=exp,
+                    value_now=vn_f, value_min=vmin_f, value_max=vmax_f,
+                    identifier=str(aid) if aid else None,
                 )
                 if depth < max_depth:
                     try:

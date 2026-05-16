@@ -1,0 +1,67 @@
+{
+  "_about": "Copy this file to config.json and edit for your machine. config.json is in .gitignore. All sections are optional; OSScreenObserver falls back to reasonable defaults when a key is missing. Keys starting with an underscore are documentation-only and ignored at load time.",
+
+  "_web_ui": "HTTP inspector server. Bind to 127.0.0.1 unless you are deliberately exposing it to your LAN. Disable debug in shared environments.",
+  "web_ui": {
+    "host": "127.0.0.1",
+    "port": 5001,
+    "debug": false
+  },
+
+  "_mcp": "Identifiers reported over the MCP framing channel. Bump 'version' when you publish a breaking change to a custom fork.",
+  "mcp": {
+    "server_name": "os-screen-observer",
+    "version": "0.1.0"
+  },
+
+  "_ocr": "Tesseract pipeline used by /api/sketch?ocr=1 and the description endpoints. Set 'enabled' to false to skip OCR entirely. 'tesseract_cmd' is the absolute path to the tesseract binary; required on Windows (where the installer does not add it to PATH) and ignored on systems where 'tesseract' is on PATH. 'min_confidence' is the floor (0-100) for word-level confidence. The fidelity knobs ('preprocess', 'upscale', 'psm_window', 'psm_roi', 'max_roi_crops') are consumed by ascii_renderer.py. 'backend' is reserved for future engines (paddle, easyocr); 'tesseract' is the only currently-supported value.",
+  "ocr": {
+    "enabled": true,
+    "tesseract_cmd": "c:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+    "min_confidence": 30,
+    "preprocess": true,
+    "upscale": 2,
+    "psm_window": 11,
+    "psm_roi": 7,
+    "max_roi_crops": 40,
+    "backend": "tesseract"
+  },
+
+  "_vlm": "Vision-LLM modality reached through any OpenWebUI-compatible OpenAI chat-completions endpoint. Leave 'enabled' false unless you have a local endpoint configured. 'base_url' should NOT include a trailing path component — OSScreenObserver appends '/api/v1/...' itself. 'api_key' may be left null when the endpoint accepts $OWUI_API_KEY from the environment. Pick a 'model' interactively via `python main.py --mode inspect`, or set it here directly. 'prompt' is sent verbatim alongside the screenshot; tune it for your downstream agent.",
+  "vlm": {
+    "enabled": false,
+    "base_url": "http://localhost:3000",
+    "api_key": null,
+    "model": null,
+    "max_tokens": 1500,
+    "prompt": "You are analyzing a computer screen for an agentic AI system. Describe what you see in structured detail: (1) What application(s) are visible? (2) What is the main content or task shown? (3) What UI controls are present and in what state? (4) What is the spatial layout? (5) What is the current focus or active element? (6) What actions would be most natural to take next? Be specific and use exact names of buttons, labels, and fields as they appear."
+  },
+
+  "_ascii_sketch": "Text-sketch renderer (ascii_renderer.py). 'grid_width'/'grid_height' control the output cell dimensions; the renderer projects the window's screen-pixel bounds into that grid. 'unicode_box' uses ┌─┐│└┘ glyphs (set false for plain ASCII +-|). The fidelity toggles are all independently switchable: 'role_glyphs' enables compact [x]/(•)/▼ control representations; 'occlusion_prune' hides siblings fully covered by later-drawn siblings (modals); 'tab_index_badges' writes ①②③ into focusable elements in DFS focus order; 'landmark_headers' bakes role+name into the top border of toolbars / dialogs / status bars; 'vlm_fallback' (off by default) lets the renderer call the VLM endpoint above to label unidentified custom widgets — set true only when you have vlm.enabled=true and accept the network cost.",
+  "ascii_sketch": {
+    "grid_width": 110,
+    "grid_height": 38,
+    "unicode_box": true,
+    "role_glyphs": true,
+    "occlusion_prune": true,
+    "tab_index_badges": true,
+    "landmark_headers": true,
+    "vlm_fallback": false
+  },
+
+  "_tree": "Accessibility-tree walk limits. 'max_depth' caps recursion so pathological apps (web views with deep DOMs) cannot blow up tree retrieval. Raise it if your target app legitimately nests deeper.",
+  "tree": {
+    "max_depth": 8
+  },
+
+  "_logging": "Python logging level for the OSScreenObserver loggers. Use DEBUG to trace adapter behavior, WARNING to silence routine info.",
+  "logging": {
+    "level": "INFO"
+  },
+
+  "_mock": "When true, all adapters are replaced with MockAdapter — useful for development on machines without a real accessibility API (e.g. headless CI). Leave false for real captures.",
+  "mock": false,
+
+  "_platform": "'auto' detects the host platform (Windows / macOS / Linux / WSL). Override with 'mock' to force MockAdapter, or with a specific platform name to force a particular adapter.",
+  "platform": "auto"
+}
