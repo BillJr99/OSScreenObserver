@@ -813,9 +813,18 @@ class LinuxAdapter:
         return []  # Z-order unavailable without Xlib/wnck
 
     def list_windows(self) -> List[WindowInfo]:
+        # Prefer wmctrl when present; otherwise fall back to Xlib so the
+        # adapter still works on systems without the wmctrl binary installed.
+        import subprocess
         try:
-            import subprocess
             r = subprocess.run(["wmctrl", "-lG"], capture_output=True, text=True, timeout=5)
+        except FileNotFoundError:
+            logger.info("[LinuxAdapter:list_windows] wmctrl not installed; trying Xlib fallback")
+            return self._list_windows_xlib()
+        except Exception as e:
+            logger.warning("[LinuxAdapter:list_windows] wmctrl failed: %s; trying Xlib fallback", e)
+            return self._list_windows_xlib()
+        try:
             windows = []
             for line in r.stdout.strip().split("\n"):
                 if not line:
@@ -832,6 +841,53 @@ class LinuxAdapter:
             return windows
         except Exception as e:
             print(f"[LinuxAdapter:list_windows] {e}")
+            traceback.print_exc()
+            return []
+
+    def _list_windows_xlib(self) -> List[WindowInfo]:
+        try:
+            from Xlib import display, X  # noqa: F401
+            from Xlib.error import XError
+        except ImportError:
+            logger.warning(
+                "[LinuxAdapter:list_windows] neither 'wmctrl' nor python-xlib "
+                "is available; install one (e.g. `apt install wmctrl` or "
+                "`pip install python-xlib`) to enumerate windows"
+            )
+            return []
+        try:
+            d = display.Display()
+            root = d.screen().root
+            NET_CLIENT_LIST = d.intern_atom("_NET_CLIENT_LIST")
+            NET_WM_NAME = d.intern_atom("_NET_WM_NAME")
+            UTF8_STRING = d.intern_atom("UTF8_STRING")
+            prop = root.get_full_property(NET_CLIENT_LIST, X.AnyPropertyType)
+            if prop is None:
+                return []
+            windows: List[WindowInfo] = []
+            for wid in prop.value:
+                try:
+                    w = d.create_resource_object("window", wid)
+                    geom = w.get_geometry()
+                    coords = w.translate_coords(root, 0, 0)
+                    x, y = -coords.x, -coords.y
+                    title = ""
+                    name_prop = w.get_full_property(NET_WM_NAME, UTF8_STRING)
+                    if name_prop and name_prop.value:
+                        title = name_prop.value.decode("utf-8", errors="replace")
+                    else:
+                        wm_name = w.get_wm_name()
+                        if wm_name:
+                            title = wm_name if isinstance(wm_name, str) else wm_name.decode("utf-8", errors="replace")
+                    title = title or "(no title)"
+                    windows.append(WindowInfo(int(wid), title, title, 0,
+                                              Bounds(x, y, geom.width, geom.height), False,
+                                              window_uid=f"x11:{int(wid):x}"))
+                except XError:
+                    continue
+            return windows
+        except Exception as e:
+            print(f"[LinuxAdapter:_list_windows_xlib] {e}")
             traceback.print_exc()
             return []
 
