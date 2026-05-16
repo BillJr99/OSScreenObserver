@@ -1,1 +1,1564 @@
-"""\nobserver.py — Core screen observation module.\n\nProvides a platform-aware ScreenObserver that exposes a uniform interface\nfor: enumerating windows, walking the accessibility element tree, capturing\nscreenshots, and dispatching input actions. Platform adapters (Windows/macOS/\nLinux/Mock) share a common base and are selected automatically at runtime.\n\nData model\n----------\n  Bounds       — screen-coordinate bounding rectangle\n  UIElement    — one node of the accessibility tree\n  WindowInfo   — top-level window metadata\n"""\n\nimport io\nimport logging\nimport os\nimport platform\nimport traceback\nfrom dataclasses import dataclass, field\nfrom typing import Any, Dict, List, Optional\n\nlogger = logging.getLogger(__name__)\n\nPLATFORM = platform.system()\n\n\ndef _is_wsl() -> bool:\n    """True when running inside Windows Subsystem for Linux (WSL 1 or WSL 2)."""\n    if PLATFORM != "Linux":\n        return False\n    try:\n        with open("/proc/version") as _f:\n            return "microsoft" in _f.read().lower()\n    except Exception:\n        return False\n\n\nIS_WSL = _is_wsl()\nEFFECTIVE_PLATFORM = "WSL" if IS_WSL else PLATFORM\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# Data Structures\n# ─────────────────────────────────────────────────────────────────────────────\n\n@dataclass\nclass Bounds:\n    x: int\n    y: int\n    width: int\n    height: int\n\n    @property\n    def right(self) -> int:\n        return self.x + self.width\n\n    @property\n    def bottom(self) -> int:\n        return self.y + self.height\n\n    @property\n    def center_x(self) -> int:\n        return self.x + self.width // 2\n\n    @property\n    def center_y(self) -> int:\n        return self.y + self.height // 2\n\n    def to_dict(self) -> Dict:\n        return {"x": self.x, "y": self.y, "width": self.width, "height": self.height}\n\n    def __bool__(self) -> bool:\n        return self.width > 0 and self.height > 0\n\n\n@dataclass\nclass UIElement:\n    element_id: str\n    name: str\n    role: str\n    value: Optional[str] = None\n    bounds: Bounds = field(default_factory=lambda: Bounds(0, 0, 0, 0))\n    enabled: bool = True\n    focused: bool = False\n    keyboard_shortcut: Optional[str] = None\n    description: Optional[str] = None\n    children: List["UIElement"] = field(default_factory=list)\n\n    def to_dict(self) -> Dict:\n        return {\n            "id": self.element_id,\n            "name": self.name,\n            "role": self.role,\n            "value": self.value,\n            "bounds": self.bounds.to_dict(),\n            "enabled": self.enabled,\n            "focused": self.focused,\n            "keyboard_shortcut": self.keyboard_shortcut,\n            "description": self.description,\n            "children": [c.to_dict() for c in self.children],\n        }\n\n    def flat_list(self) -> List["UIElement"]:\n        """Return all elements in this subtree as a flat list (DFS order)."""\n        result = [self]\n        for child in self.children:\n            result.extend(child.flat_list())\n        return result\n\n\n@dataclass\nclass WindowInfo:\n    handle: Any          # platform-specific: HWND (int) on Windows; int index elsewhere\n    title: str\n    process_name: str\n    pid: int\n    bounds: Bounds\n    is_focused: bool\n    # Stable cross-call identifier; populated by adapters (design doc §6.1).\n    window_uid: str = ""\n    # Optional multi-monitor metadata (design doc §6.3).  Populated when the\n    # adapter knows; left None on adapters that do not.\n    monitor_index: Optional[int] = None\n    scale_factor: Optional[float] = None\n    logical_bounds: Optional[Bounds] = None\n    physical_bounds: Optional[Bounds] = None\n\n    def to_dict(self) -> Dict:\n        d: Dict[str, Any] = {\n            "handle": str(self.handle),\n            "title": self.title,\n            "process": self.process_name,\n            "pid": self.pid,\n            "bounds": self.bounds.to_dict(),\n            "focused": self.is_focused,\n            "window_uid": self.window_uid,\n        }\n        if self.monitor_index is not None:\n            d["monitor_index"] = self.monitor_index\n        if self.scale_factor is not None:\n            d["scale_factor"] = self.scale_factor\n        if self.logical_bounds is not None:\n            d["logical_bounds"] = self.logical_bounds.to_dict()\n        if self.physical_bounds is not None:\n            d["physical_bounds"] = self.physical_bounds.to_dict()\n        return d\n\n\n# ─── Window resolution result ────────────────────────────────────────────────\n\n@dataclass\nclass WindowResolution:\n    info: Optional[WindowInfo]\n    warning: Optional[str]\n    used_uid: bool\n    requested_uid: Optional[str]\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# Mock Adapter  (no OS dependencies; safe to run in any environment)\n# ─────────────────────────────────────────────────────────────────────────────\n\nclass MockAdapter:\n    """Synthetic data adapter for development and testing."""\n\n    def __init__(self) -> None:\n        import secrets as _s\n        self._nonce = _s.token_hex(4)\n        # Optional scenario hook (design doc §15.5).  Set by main.py when\n        # --scenario is supplied; methods route through the scenario when\n        # active so that input actions can drive state transitions.\n        self.scenario: Optional[Any] = None\n\n    def get_windows_above_bounds(self, hwnd) -> List["Bounds"]:\n        return []  # Mock assumes the target window is on top\n\n    def list_windows(self) -> List[WindowInfo]:\n        if self.scenario is not None:\n            return self.scenario.list_windows(self._nonce)\n        return [\n            WindowInfo(1001, "Untitled — Notepad", "notepad.exe", 1234,\n                       Bounds(80, 60, 800, 600), True,\n                       window_uid=f"mock:0:{self._nonce}"),\n            WindowInfo(1002, "GitHub · Where software is built — Google Chrome",\n                       "chrome.exe", 5678, Bounds(0, 0, 1920, 1050), False,\n                       window_uid=f"mock:1:{self._nonce}"),\n            WindowInfo(1003, "screen_observer.py — Visual Studio Code",\n                       "code.exe", 9012, Bounds(960, 0, 960, 1050), False,\n                       window_uid=f"mock:2:{self._nonce}"),\n        ]\n\n    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:\n        if self.scenario is not None:\n            return self.scenario.get_element_tree(hwnd)\n        root = UIElement("root", "Untitled — Notepad", "Window",\n                         bounds=Bounds(80, 60, 800, 600))\n\n        # Menu bar\n        menubar = UIElement("root.0", "MenuBar", "MenuBar",\n                            bounds=Bounds(80, 60, 800, 22))\n        for i, lbl in enumerate(["File", "Edit", "Format", "View", "Help"]):\n            menubar.children.append(UIElement(\n                f"root.0.{i}", lbl, "MenuItem",\n                bounds=Bounds(80 + i * 58, 60, 56, 22)\n            ))\n        root.children.append(menubar)\n\n        # Main editing area\n        editor = UIElement(\n            "root.1", "Text Editor", "Document",\n            value="Hello, world!\nThis is a test document.\nLine 3 has some content here.\n",\n            bounds=Bounds(80, 82, 800, 514), focused=True\n        )\n        root.children.append(editor)\n\n        # Horizontal scroll bar\n        hscroll = UIElement("root.2", "Horizontal ScrollBar", "ScrollBar",\n                            bounds=Bounds(80, 596, 784, 18))\n        root.children.append(hscroll)\n\n        # Vertical scroll bar\n        vscroll = UIElement("root.3", "Vertical ScrollBar", "ScrollBar",\n                            bounds=Bounds(864, 82, 18, 532))\n        root.children.append(vscroll)\n\n        # Status bar\n        sb = UIElement("root.4", "Status Bar", "StatusBar",\n                       bounds=Bounds(80, 614, 800, 22))\n        for i, (lbl, val) in enumerate([\n            ("Position",  "Ln 1, Col 1"),\n            ("Zoom",      "100%"),\n            ("Encoding",  "UTF-8"),\n            ("EOL",       "Windows (CRLF)"),\n        ]):\n            sb.children.append(UIElement(\n                f"root.4.{i}", lbl, "Text", value=val,\n                bounds=Bounds(80 + i * 190, 614, 188, 22)\n            ))\n        root.children.append(sb)\n\n        return root\n\n    def get_screenshot(self, hwnd=None) -> Optional[bytes]:\n        try:\n            from PIL import Image, ImageDraw\n            img = Image.new("RGB", (800, 600), "#1a1e2e")\n            draw = ImageDraw.Draw(img)\n\n            # Title bar\n            draw.rectangle([0, 0, 800, 30], fill="#2d3250")\n            draw.text((10, 8), "Untitled — Notepad", fill="#c8d3f5")\n\n            # Menu bar\n            draw.rectangle([0, 30, 800, 52], fill="#1e2030")\n            for i, m in enumerate(["File", "Edit", "Format", "View", "Help"]):\n                draw.text((10 + i * 58, 36), m, fill="#a9b1d6")\n\n            # Editor area\n            draw.rectangle([0, 52, 782, 570], fill="#1a1e2e")\n            for i, ln in enumerate(["Hello, world!", "This is a test document.",\n                                     "Line 3 has some content here.", ""]):\n                draw.text((6, 58 + i * 18), ln, fill="#c0caf5")\n\n            # Scrollbars\n            draw.rectangle([782, 52, 800, 570], fill="#24283b")\n            draw.rectangle([0, 570, 782, 586], fill="#24283b")\n\n            # Status bar\n            draw.rectangle([0, 586, 800, 600], fill="#16161e")\n            draw.text((6, 589), "Ln 1, Col 1     100%     UTF-8     Windows (CRLF)",\n                      fill="#565f89")\n\n            buf = io.BytesIO()\n            img.save(buf, "PNG")\n            return buf.getvalue()\n        except Exception as e:\n            print(f"[MockAdapter:get_screenshot] {e}")\n            traceback.print_exc()\n            return None\n\n    def perform_action(self, action: str, element_id: str = None,\n                       value: Any = None, hwnd=None) -> Dict:\n        if self.scenario is not None:\n            handled = self.scenario.handle_action(action=action,\n                                                   element_id=element_id,\n                                                   value=value, hwnd=hwnd)\n            if handled is not None:\n                return handled\n        return {\n            "success": True,\n            "action": action,\n            "note": "Mock adapter — no real OS action performed",\n        }\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# UIA control-type ID → pywinauto-compatible role name.\n# Values from UIAutomationClient.h; must match what selectors/descriptions expect.\n_UIA_TYPE_TO_ROLE: Dict[int, str] = {\n    50000: "Button",      50001: "Calendar",    50002: "CheckBox",\n    50003: "ComboBox",    50004: "Edit",         50005: "Hyperlink",\n    50006: "Image",       50007: "ListItem",     50008: "ListBox",\n    50009: "Menu",        50010: "MenuBar",      50011: "MenuItem",\n    50012: "ProgressBar", 50013: "RadioButton",  50014: "ScrollBar",\n    50015: "Slider",      50016: "Spinner",      50017: "StatusBar",\n    50018: "TabControl",  50019: "TabItem",      50020: "Text",\n    50021: "Toolbar",     50022: "ToolTip",      50023: "Tree",\n    50024: "TreeItem",    50025: "Custom",       50026: "GroupBox",\n    50027: "Thumb",       50028: "DataGrid",     50029: "DataItem",\n    50030: "Document",    50031: "SplitButton",  50032: "Dialog",\n    50033: "Pane",        50034: "Header",       50035: "HeaderItem",\n    50036: "Table",       50037: "TitleBar",     50038: "Separator",\n    50039: "SemanticZoom",50040: "AppBar",\n}\n\n\n# Windows Adapter  (requires: pywinauto, pywin32, psutil)\n# ─────────────────────────────────────────────────────────────────────────────\n\nclass WindowsAdapter:\n    """Full Windows UIA adapter using pywinauto + pywin32."""\n\n    def __init__(self, config: dict):\n        self.config = config\n        try:\n            import win32gui    # noqa: F401\n            import win32process  # noqa: F401\n            import psutil      # noqa: F401\n            from pywinauto import Application  # noqa: F401\n            self._Application = Application\n            logger.info("[WindowsAdapter:__init__] pywinauto/pywin32 ready")\n        except ImportError as e:\n            print(f"[WindowsAdapter:__init__] Missing dependency: {e}")\n            traceback.print_exc()\n            raise\n\n    def list_windows(self) -> List[WindowInfo]:\n        try:\n            import win32gui\n            import win32process\n            import psutil\n\n            results: List[WindowInfo] = []\n            fg = win32gui.GetForegroundWindow()\n\n            def _cb(hwnd, _):\n                try:\n                    if not win32gui.IsWindowVisible(hwnd):\n                        return\n                    title = win32gui.GetWindowText(hwnd)\n                    if not title:\n                        return\n                    rect = win32gui.GetWindowRect(hwnd)\n                    w, h = rect[2] - rect[0], rect[3] - rect[1]\n                    if w <= 0 or h <= 0:\n                        return\n                    try:\n                        _, pid = win32process.GetWindowThreadProcessId(hwnd)\n                        proc_name = psutil.Process(pid).name()\n                    except Exception:\n                        pid, proc_name = 0, "unknown"\n                    results.append(WindowInfo(\n                        handle=hwnd, title=title, process_name=proc_name, pid=pid,\n                        bounds=Bounds(rect[0], rect[1], w, h),\n                        is_focused=(hwnd == fg),\n                        window_uid=f"win:{pid}:{hwnd}",\n                    ))\n                except Exception as inner:\n                    logger.debug(f"[WindowsAdapter:list_windows:_cb] {inner}")\n\n            win32gui.EnumWindows(_cb, None)\n            return sorted(results, key=lambda w: (not w.is_focused, w.title.lower()))\n        except Exception as e:\n            print(f"[WindowsAdapter:list_windows] {e}")\n            traceback.print_exc()\n            return []\n\n    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:\n        """Return bounds of visible windows that are above hwnd in Z-order."""\n        try:\n            import win32gui\n            GW_HWNDNEXT = 2\n            above: List[Bounds] = []\n            h = win32gui.GetTopWindow(None)\n            while h and h != hwnd:\n                try:\n                    if win32gui.IsWindowVisible(h):\n                        rect = win32gui.GetWindowRect(h)\n                        w = rect[2] - rect[0]\n                        hh = rect[3] - rect[1]\n                        if w > 0 and hh > 0:\n                            above.append(Bounds(rect[0], rect[1], w, hh))\n                except Exception:\n                    pass\n                try:\n                    h = win32gui.GetWindow(h, GW_HWNDNEXT)\n                except Exception:\n                    break\n            return above\n        except Exception as e:\n            logger.debug(f"[WindowsAdapter:get_windows_above_bounds] {e}")\n            return []\n\n    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:\n        try:\n            import win32gui\n            if hwnd is None:\n                hwnd = win32gui.GetForegroundWindow()\n        except Exception as e:\n            print(f"[WindowsAdapter:get_element_tree] win32gui: {e}")\n            return None\n\n        # Run both walkers and synthesise: UIA crosses Chromium fragment boundaries\n        # (gets web content); pywinauto may surface native-control properties that\n        # UIA omits.  The merged result gives the LLM everything either source sees.\n        uia_tree = self._uia_walk(hwnd)\n        pw_tree  = None\n        try:\n            app = self._Application(backend="uia").connect(handle=hwnd)\n            window = app.window(handle=hwnd)\n            wrapper = window.wrapper_object()\n            max_depth = self.config.get("tree", {}).get("max_depth", 8)\n            pw_tree = self._walk(wrapper, "root", 0, max_depth)\n        except Exception as e:\n            logger.debug(f"[WindowsAdapter:get_element_tree] pywinauto: {e}")\n\n        if uia_tree is None and pw_tree is None:\n            return None\n        if uia_tree is None:\n            return pw_tree\n        if pw_tree is None:\n            return uia_tree\n        return self._synthesize_trees(uia_tree, pw_tree)\n\n    def _uia_walk(self, hwnd: int) -> Optional[UIElement]:\n        """Walk the accessibility tree via raw IUIAutomation COM calls.\n\n        pywinauto's children() falls back to EnumChildWindows for HWND-backed\n        elements (e.g. Chrome_RenderWidgetHostHWND), missing all web content.\n        Using FindAll(TreeScope_Children) directly on the IUIAutomationElement\n        always uses UIA and correctly crosses Chromium fragment boundaries.\n        """\n        try:\n            # pywinauto already initialised comtypes/UIA at import time.\n            # Retrieve the raw IUIAutomation COM interface from pywinauto's singleton.\n            from pywinauto.uia_defines import IUIA\n            _iuia_obj = IUIA()\n            # pywinauto ≥0.6 exposes it as .iuia; older versions expose it directly.\n            raw_uia = getattr(_iuia_obj, "iuia", _iuia_obj)\n\n            root = raw_uia.ElementFromHandle(hwnd)\n            true_cond = raw_uia.CreateTrueCondition()\n            max_depth = self.config.get("tree", {}).get("max_depth", 8)\n\n            # UIA property IDs (UIAutomationClient.h)\n            _NAME        = 30005\n            _CTRL_TYPE   = 30003\n            _ENABLED     = 30010\n            _FOCUSED     = 30008\n            _VALUE       = 30045\n            _ACCESS_KEY  = 30023   # keyboard mnemonic, e.g. "Alt+F"\n            _ACCEL_KEY   = 30022   # accelerator, e.g. "Ctrl+Z"\n            _HELP_TEXT   = 30013   # tooltip / description\n            _SCOPE_CHILDREN = 0x2\n\n            def _prop(elem, pid, default=None):\n                try:\n                    v = elem.GetCurrentPropertyValue(pid)\n                    return v if v is not None else default\n                except Exception:\n                    return default\n\n            def walk(elem, elem_id: str, depth: int) -> UIElement:\n                name = _prop(elem, _NAME, "") or ""\n                ctrl = _prop(elem, _CTRL_TYPE, 0) or 0\n                role = _UIA_TYPE_TO_ROLE.get(ctrl, "Pane")\n                try:\n                    r = elem.CurrentBoundingRectangle\n                    bounds = Bounds(r.left, r.top, r.right - r.left, r.bottom - r.top)\n                except Exception:\n                    bounds = Bounds(0, 0, 0, 0)\n                enabled = bool(_prop(elem, _ENABLED, True))\n                focused = bool(_prop(elem, _FOCUSED, False))\n                value   = _prop(elem, _VALUE) or None\n                # Keyboard shortcut: prefer access key, fall back to accelerator.\n                ks = _prop(elem, _ACCESS_KEY) or _prop(elem, _ACCEL_KEY) or None\n                desc = _prop(elem, _HELP_TEXT) or None\n                node = UIElement(\n                    element_id=elem_id, name=name, role=role, value=value,\n                    bounds=bounds, enabled=enabled, focused=focused,\n                    keyboard_shortcut=ks or None,\n                    description=desc or None,\n                )\n                if depth < max_depth:\n                    try:\n                        kids = elem.FindAll(_SCOPE_CHILDREN, true_cond)\n                        for i in range(kids.Length):\n                            node.children.append(\n                                walk(kids.GetElement(i), f"{elem_id}.{i}", depth + 1)\n                            )\n                    except Exception:\n                        pass\n                return node\n\n            return walk(root, "root", 0)\n        except Exception as e:\n            logger.debug(f"[WindowsAdapter:_uia_walk] {e}")\n            return None\n\n    def _walk(self, wrapper, elem_id: str, depth: int, max_depth: int) -> UIElement:\n        try:\n            try:\n                rect = wrapper.rectangle()\n                bounds = Bounds(rect.left, rect.top,\n                                rect.right - rect.left, rect.bottom - rect.top)\n            except Exception:\n                bounds = Bounds(0, 0, 0, 0)\n\n            try:\n                name = wrapper.window_text() or ""\n            except Exception:\n                name = ""\n\n            try:\n                role = wrapper.friendly_class_name() or "Unknown"\n            except Exception:\n                role = "Unknown"\n\n            try:\n                value = wrapper.get_value() if hasattr(wrapper, "get_value") else None\n            except Exception:\n                value = None\n\n            try:\n                enabled = wrapper.is_enabled()\n            except Exception:\n                enabled = True\n\n            try:\n                focused = wrapper.has_keyboard_focus()\n            except Exception:\n                focused = False\n\n            elem = UIElement(\n                element_id=elem_id, name=name, role=role, value=value,\n                bounds=bounds, enabled=enabled, focused=focused,\n            )\n\n            if depth < max_depth:\n                try:\n                    for i, child in enumerate(wrapper.children()):\n                        elem.children.append(\n                            self._walk(child, f"{elem_id}.{i}", depth + 1, max_depth)\n                        )\n                except Exception as ce:\n                    logger.debug(f"[WindowsAdapter:_walk:{elem_id}:children] {ce}")\n\n            return elem\n        except Exception as e:\n            print(f"[WindowsAdapter:_walk:{elem_id}] {e}")\n            traceback.print_exc()\n            return UIElement(elem_id, "[error]", "Unknown", bounds=Bounds(0, 0, 0, 0))\n\n    def _synthesize_trees(self, primary: UIElement, secondary: UIElement) -> UIElement:\n        """Merge two accessibility trees into one richer tree.\n\n        Uses the primary (UIA) tree as the base — it sees web content.\n        For each node in secondary (pywinauto) matched by bounds, enrich the\n        primary node with any non-empty properties the primary is missing.\n        Secondary nodes whose bounds don't appear anywhere in the primary tree\n        are injected under the deepest primary ancestor that contains them.\n        """\n        # Build a flat index of primary nodes keyed by (x, y, w, h).\n        bounds_index: Dict[tuple, UIElement] = {}\n\n        def _index(node: UIElement) -> None:\n            key = (node.bounds.x, node.bounds.y, node.bounds.width, node.bounds.height)\n            if key not in bounds_index:\n                bounds_index[key] = node\n            for c in node.children:\n                _index(c)\n\n        _index(primary)\n\n        # Enrich matched nodes; collect unmatched ones with their bounds.\n        unmatched: List[UIElement] = []\n\n        def _enrich(node: UIElement) -> None:\n            key = (node.bounds.x, node.bounds.y, node.bounds.width, node.bounds.height)\n            target = bounds_index.get(key)\n            if target is not None:\n                # Copy over properties the primary left empty.\n                if not target.keyboard_shortcut and node.keyboard_shortcut:\n                    target.keyboard_shortcut = node.keyboard_shortcut\n                if not target.description and node.description:\n                    target.description = node.description\n                if not target.value and node.value:\n                    target.value = node.value\n            else:\n                # Not in primary — keep for injection.\n                w, h = node.bounds.width, node.bounds.height\n                if w > 0 and h > 0:   # ignore zero-size ghost elements\n                    unmatched.append(node)\n            for c in node.children:\n                _enrich(c)\n\n        _enrich(secondary)\n\n        # Inject unmatched secondary nodes under the deepest primary ancestor\n        # whose bounds contain them (largest-area match wins → most specific).\n        def _contains(outer: Bounds, inner: Bounds) -> bool:\n            return (outer.x <= inner.x and outer.y <= inner.y and\n                    outer.x + outer.width  >= inner.x + inner.width and\n                    outer.y + outer.height >= inner.y + inner.height)\n\n        for node in unmatched:\n            best: Optional[UIElement] = None\n            best_area = float("inf")\n            for pnode in bounds_index.values():\n                if _contains(pnode.bounds, node.bounds):\n                    area = pnode.bounds.width * pnode.bounds.height\n                    if area < best_area:\n                        best_area = area\n                        best = pnode\n            if best is None:\n                best = primary\n            # Renumber the injected element_id to avoid collisions.\n            node.element_id = f"{best.element_id}.x{len(best.children)}"\n            best.children.append(node)\n\n        return primary\n\n    def get_screenshot(self, hwnd=None) -> Optional[bytes]:\n        try:\n            import win32gui\n            import win32ui\n            from PIL import Image\n            import ctypes\n\n            if hwnd is None:\n                hwnd = win32gui.GetForegroundWindow()\n\n            rect = win32gui.GetWindowRect(hwnd)\n            width = rect[2] - rect[0]\n            height = rect[3] - rect[1]\n\n            if width <= 0 or height <= 0:\n                return None\n\n            hwnd_dc = win32gui.GetWindowDC(hwnd)\n            mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)\n            save_dc = mfc_dc.CreateCompatibleDC()\n            save_bmp = win32ui.CreateBitmap()\n            save_bmp.CreateCompatibleBitmap(mfc_dc, width, height)\n            save_dc.SelectObject(save_bmp)\n\n            # PW_RENDERFULLCONTENT (0x2) renders hardware-accelerated content too\n            ok = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)\n\n            bmpinfo = save_bmp.GetInfo()\n            bmpstr = save_bmp.GetBitmapBits(True)\n\n            win32gui.DeleteObject(save_bmp.GetHandle())\n            save_dc.DeleteDC()\n            mfc_dc.DeleteDC()\n            win32gui.ReleaseDC(hwnd, hwnd_dc)\n\n            if ok:\n                img = Image.frombuffer(\n                    "RGB",\n                    (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),\n                    bmpstr, "raw", "BGRX", 0, 1,\n                )\n                buf = io.BytesIO()\n                img.save(buf, "PNG")\n                return buf.getvalue()\n\n            # PrintWindow failed — fall back to screen-region capture\n            logger.warning("[WindowsAdapter:get_screenshot] PrintWindow failed; falling back to mss")\n            raise RuntimeError("PrintWindow returned 0")\n\n        except Exception as e:\n            logger.debug(f"[WindowsAdapter:get_screenshot] PrintWindow path failed ({e}); trying mss")\n            try:\n                import mss\n                from PIL import Image\n                import win32gui\n\n                with mss.mss() as sct:\n                    if hwnd:\n                        rect = win32gui.GetWindowRect(hwnd)\n                        region = {"left": rect[0], "top": rect[1],\n                                  "width": rect[2] - rect[0], "height": rect[3] - rect[1]}\n                    else:\n                        region = sct.monitors[1]\n                    raw = sct.grab(region)\n                    img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")\n                    buf = io.BytesIO()\n                    img.save(buf, "PNG")\n                    return buf.getvalue()\n            except Exception as e2:\n                print(f"[WindowsAdapter:get_screenshot] {e2}")\n                traceback.print_exc()\n                return None\n\n    def perform_action(self, action: str, element_id: str = None,\n                       value: Any = None, hwnd=None) -> Dict:\n        try:\n            import pyautogui\n\n            if action == "type" and value:\n                pyautogui.write(str(value), interval=0.02)\n                return {"success": True, "action": "type", "text": value}\n\n            elif action == "key" and value:\n                keys = str(value).lower().split("+")\n                pyautogui.hotkey(*keys)\n                return {"success": True, "action": "key", "keys": value}\n\n            elif action == "click_at" and isinstance(value, dict):\n                pyautogui.click(value["x"], value["y"])\n                return {"success": True, "action": "click_at", **value}\n\n            elif action == "scroll" and isinstance(value, dict):\n                pyautogui.scroll(value.get("clicks", 3), x=value.get("x"), y=value.get("y"))\n                return {"success": True, "action": "scroll"}\n\n            else:\n                return {"success": False, "error": f"Unsupported action: {action}"}\n        except Exception as e:\n            print(f"[WindowsAdapter:perform_action] {e}")\n            traceback.print_exc()\n            return {"success": False, "error": str(e)}\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# macOS Adapter  (screenshot works; AX tree is a stub pending pyobjc work)\n# ─────────────────────────────────────────────────────────────────────────────\n\nclass MacOSAdapter:\n    def __init__(self, config: dict):\n        self.config = config\n        logger.info("[MacOSAdapter:__init__] macOS adapter loaded (AX tree is stub)")\n\n    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:\n        return []  # Z-order unavailable without Quartz CGWindowList\n\n    def list_windows(self) -> List[WindowInfo]:\n        try:\n            import subprocess\n            script = ('tell application "System Events" to get name of every '\n                      'process whose background only is false')\n            r = subprocess.run(["osascript", "-e", script],\n                               capture_output=True, text=True, timeout=5)\n            apps = [a.strip() for a in r.stdout.split(",") if a.strip()]\n            return [WindowInfo(i, a, a, 0, Bounds(0, 0, 1920, 1080), i == 0,\n                               window_uid=f"mac:{i}")\n                    for i, a in enumerate(apps)]\n        except Exception as e:\n            print(f"[MacOSAdapter:list_windows] {e}")\n            traceback.print_exc()\n            return []\n\n    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:\n        logger.warning("[MacOSAdapter:get_element_tree] Full AX tree requires pyobjc; returning stub")\n        return UIElement("root", "macOS Application (AX tree stub)", "Window",\n                         bounds=Bounds(0, 0, 1920, 1080))\n\n    def get_screenshot(self, hwnd=None) -> Optional[bytes]:\n        try:\n            import mss\n            from PIL import Image\n            with mss.mss() as sct:\n                raw = sct.grab(sct.monitors[1])\n                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")\n                buf = io.BytesIO()\n                img.save(buf, "PNG")\n                return buf.getvalue()\n        except Exception as e:\n            print(f"[MacOSAdapter:get_screenshot] {e}")\n            traceback.print_exc()\n            return None\n\n    def perform_action(self, action: str, element_id=None,\n                       value: Any = None, hwnd=None) -> Dict:\n        try:\n            import pyautogui\n            if action == "type" and value:\n                pyautogui.write(str(value), interval=0.02)\n                return {"success": True}\n            if action == "key" and value:\n                pyautogui.hotkey(*str(value).lower().split("+"))\n                return {"success": True}\n            return {"success": False, "error": f"Unsupported: {action}"}\n        except Exception as e:\n            print(f"[MacOSAdapter:perform_action] {e}")\n            traceback.print_exc()\n            return {"success": False, "error": str(e)}\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# Linux Adapter  (screenshot works; AT-SPI tree is stub pending pyatspi work)\n# ─────────────────────────────────────────────────────────────────────────────\n\nclass LinuxAdapter:\n    def __init__(self, config: dict):\n        self.config = config\n        logger.info("[LinuxAdapter:__init__] Linux adapter loaded (AT-SPI tree is stub)")\n\n    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:\n        return []  # Z-order unavailable without Xlib/wnck\n\n    def list_windows(self) -> List[WindowInfo]:\n        try:\n            import subprocess\n            r = subprocess.run(["wmctrl", "-lG"], capture_output=True, text=True, timeout=5)\n            windows = []\n            for line in r.stdout.strip().split("\n"):\n                if not line:\n                    continue\n                parts = line.split(None, 8)\n                if len(parts) < 8:\n                    continue\n                hwnd = int(parts[0], 16)\n                x, y, w, h = int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])\n                title = parts[8] if len(parts) > 8 else "(no title)"\n                windows.append(WindowInfo(hwnd, title, title, 0,\n                                          Bounds(x, y, w, h), False,\n                                          window_uid=f"x11:{hwnd:x}"))\n            return windows\n        except Exception as e:\n            print(f"[LinuxAdapter:list_windows] {e}")\n            traceback.print_exc()\n            return []\n\n    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:\n        logger.warning("[LinuxAdapter:get_element_tree] Full tree requires pyatspi; returning stub")\n        return UIElement("root", "Linux Application (AT-SPI stub)", "Window",\n                         bounds=Bounds(0, 0, 1920, 1080))\n\n    def get_screenshot(self, hwnd=None) -> Optional[bytes]:\n        # mss needs a running X server (DISPLAY must be set).\n        try:\n            import mss\n            from PIL import Image\n            with mss.mss() as sct:\n                raw = sct.grab(sct.monitors[1])\n                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")\n                buf = io.BytesIO()\n                img.save(buf, "PNG")\n                return buf.getvalue()\n        except Exception as e:\n            logger.debug("[LinuxAdapter:get_screenshot] mss failed: %s; trying scrot", e)\n        # scrot can write PNG directly to stdout (-z suppresses notifications).\n        try:\n            import subprocess\n            r = subprocess.run(["scrot", "-z", "-"], capture_output=True, timeout=10)\n            if r.returncode == 0 and r.stdout:\n                return r.stdout\n        except Exception as e:\n            logger.debug("[LinuxAdapter:get_screenshot] scrot failed: %s", e)\n        return None\n\n    def perform_action(self, action: str, element_id=None,\n                       value: Any = None, hwnd=None) -> Dict:\n        try:\n            import pyautogui\n            if action == "type" and value:\n                pyautogui.write(str(value), interval=0.02)\n                return {"success": True}\n            if action == "key" and value:\n                pyautogui.hotkey(*str(value).lower().split("+"))\n                return {"success": True}\n            return {"success": False, "error": f"Unsupported: {action}"}\n        except Exception as e:\n            print(f"[LinuxAdapter:perform_action] {e}")\n            traceback.print_exc()\n            return {"success": False, "error": str(e)}\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# WSL Adapter  (WSL 1 + WSL 2: X11 when DISPLAY is set, PowerShell fallback)\n# ─────────────────────────────────────────────────────────────────────────────\n\nclass WSLAdapter(LinuxAdapter):\n    """Adapter for Windows Subsystem for Linux.\n\n    Prefers X11-based tools (wmctrl, mss) when DISPLAY is set.  Falls back to\n    PowerShell / cmd.exe interop, which is always available in both WSL 1 and\n    WSL 2 via the Windows binary execution layer.\n    """\n\n    def __init__(self, config: dict) -> None:\n        self.config = config\n        self._has_display = bool(os.environ.get("DISPLAY"))\n        logger.info(\n            "[WSLAdapter:__init__] WSL detected; "\n            "DISPLAY=%s", "set" if self._has_display else "not set (PowerShell fallback active)",\n        )\n\n    # ── Window listing ────────────────────────────────────────────────────────\n\n    def list_windows(self) -> List[WindowInfo]:\n        if self._has_display:\n            result = LinuxAdapter.list_windows(self)\n            if result:\n                return result\n        return self._list_windows_ps()\n\n    def _list_windows_ps(self) -> List[WindowInfo]:\n        """Enumerate visible Windows windows via PowerShell ConvertTo-Json."""\n        try:\n            import json\n            import subprocess\n            ps = (\n                "Get-Process "\n                "| Where-Object { $_.MainWindowTitle -ne '' } "\n                "| Select-Object Id,ProcessName,MainWindowTitle "\n                "| ConvertTo-Json -Compress"\n            )\n            r = subprocess.run(\n                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],\n                capture_output=True, text=True, timeout=10,\n            )\n            if r.returncode != 0 or not r.stdout.strip():\n                return []\n            data = json.loads(r.stdout)\n            if isinstance(data, dict):\n                data = [data]\n            results: List[WindowInfo] = []\n            for i, item in enumerate(data or []):\n                pid   = int(item.get("Id", 0))\n                name  = str(item.get("ProcessName", "unknown"))\n                title = str(item.get("MainWindowTitle", ""))\n                if not title:\n                    continue\n                results.append(WindowInfo(\n                    handle=pid, title=title, process_name=name, pid=pid,\n                    bounds=Bounds(0, 0, 1920, 1080), is_focused=(i == 0),\n                    window_uid=f"wsl:{pid}",\n                ))\n            return results\n        except Exception as e:\n            logger.debug("[WSLAdapter:_list_windows_ps] %s", e)\n            return []\n\n    # ── Screenshot ────────────────────────────────────────────────────────────\n\n    def get_screenshot(self, hwnd=None) -> Optional[bytes]:\n        if self._has_display:\n            result = LinuxAdapter.get_screenshot(self, hwnd)\n            if result:\n                return result\n        return self._screenshot_ps()\n\n    def _screenshot_ps(self) -> Optional[bytes]:\n        """Capture the primary screen via PowerShell, returning PNG bytes."""\n        try:\n            import base64\n            import subprocess\n            # Capture screen to a MemoryStream and emit as base64 — avoids\n            # WSL↔Windows path translation issues entirely.\n            ps = (\n                "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"\n                "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"\n                "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"\n                "$g=[System.Drawing.Graphics]::FromImage($bmp);"\n                "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"\n                "$ms=New-Object System.IO.MemoryStream;"\n                "$bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png);"\n                "$g.Dispose();$bmp.Dispose();"\n                "[Convert]::ToBase64String($ms.ToArray())"\n            )\n            r = subprocess.run(\n                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],\n                capture_output=True, text=True, timeout=20,\n            )\n            if r.returncode == 0 and r.stdout.strip():\n                return base64.b64decode(r.stdout.strip())\n        except Exception as e:\n            logger.debug("[WSLAdapter:_screenshot_ps] %s", e)\n        return None\n\n    # ── get_windows_above_bounds: returns [] (inherited from LinuxAdapter) ────\n    # ── get_element_tree: upgraded by linux_adapter.install_into if pyatspi ──\n    # ── perform_action: inherited (pyautogui; needs DISPLAY) ─────────────────\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# ScreenObserver  (public interface; delegates to platform adapter)\n# ─────────────────────────────────────────────────────────────────────────────\n\nclass ScreenObserver:\n    """\n    Platform-aware screen observer.  All consumers should program against\n    this class rather than the platform adapters directly.\n    """\n\n    def __init__(self, config: dict):\n        self.config = config\n        self._adapter = self._select_adapter()\n        # Try to upgrade stub adapters to real AX implementations.\n        try:\n            if isinstance(self._adapter, MacOSAdapter):\n                import mac_adapter\n                if mac_adapter.install_into(self):\n                    logger.info("[ScreenObserver] mac_adapter installed (pyobjc)")\n            elif isinstance(self._adapter, LinuxAdapter):\n                import linux_adapter\n                if linux_adapter.install_into(self):\n                    logger.info("[ScreenObserver] linux_adapter installed (pyatspi)")\n        except Exception:\n            logger.exception("real adapter upgrade failed")\n\n    def _select_adapter(self):\n        if self.config.get("mock", False):\n            logger.info("[ScreenObserver] Using MockAdapter")\n            return MockAdapter()\n\n        target = self.config.get("platform", "auto")\n        # EFFECTIVE_PLATFORM is "WSL" when running inside WSL, otherwise same\n        # as platform.system().  Explicit config overrides auto-detection.\n        sys_plat = EFFECTIVE_PLATFORM if target == "auto" else target\n\n        adapters = {\n            "Windows": WindowsAdapter,\n            "Darwin":  MacOSAdapter,\n            "Linux":   LinuxAdapter,\n            "WSL":     WSLAdapter,\n        }\n\n        cls = adapters.get(sys_plat)\n        if cls is None:\n            logger.warning("[ScreenObserver] Unknown platform '%s'; using MockAdapter", sys_plat)\n            return MockAdapter()\n\n        try:\n            return cls(self.config)\n        except Exception as e:\n            print(f"[ScreenObserver:_select_adapter] Platform adapter failed: {e}; falling back to Mock")\n            traceback.print_exc()\n            return MockAdapter()\n\n    @property\n    def is_mock(self) -> bool:\n        return isinstance(self._adapter, MockAdapter)\n\n    def list_windows(self) -> List[WindowInfo]:\n        return self._adapter.list_windows()\n\n    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:\n        return self._adapter.get_element_tree(hwnd)\n\n    def get_screenshot(self, hwnd=None) -> Optional[bytes]:\n        return self._adapter.get_screenshot(hwnd)\n\n    def get_full_display_screenshot(self) -> Optional[bytes]:\n        """Capture the entire virtual desktop (all monitors combined) as a PNG."""\n        try:\n            import mss\n            from PIL import Image\n            with mss.mss() as sct:\n                raw = sct.grab(sct.monitors[0])   # 0 = union of all monitors\n                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")\n                buf = io.BytesIO()\n                img.save(buf, "PNG")\n                return buf.getvalue()\n        except Exception as e:\n            logger.warning(f"[ScreenObserver:get_full_display_screenshot] {e}; falling back")\n            return self._adapter.get_screenshot()\n\n    def perform_action(self, action: str, element_id: str = None,\n                       value: Any = None, hwnd=None) -> Dict:\n        return self._adapter.perform_action(action, element_id, value, hwnd)\n\n    def window_by_index(self, windows: List[WindowInfo],\n                        index: Optional[int]) -> Optional[WindowInfo]:\n        """Convenience: return a WindowInfo by list index, or None."""\n        if index is None or not windows:\n            return None\n        if 0 <= index < len(windows):\n            return windows[index]\n        return None\n\n    def window_by_uid(self, windows: List[WindowInfo],\n                      uid: Optional[str]) -> Optional[WindowInfo]:\n        """Resolve a window by stable uid; returns None if not found."""\n        if not uid or not windows:\n            return None\n        for w in windows:\n            if w.window_uid == uid:\n                return w\n        return None\n\n    def resolve_window(self, windows: List[WindowInfo],\n                       window_uid: Optional[str],\n                       window_index: Optional[int],\n                       window_title: Optional[str] = None) -> "WindowResolution":\n        """Resolve a window by uid (preferred), index, or title substring."""\n        if window_uid:\n            info = self.window_by_uid(windows, window_uid)\n            warning = ("both window_index and window_uid given; window_uid used"\n                       if window_index is not None else None)\n            return WindowResolution(info=info, warning=warning,\n                                    used_uid=True, requested_uid=window_uid)\n        if window_index is not None:\n            info = self.window_by_index(windows, window_index)\n            resolved_uid = info.window_uid if info else None\n            return WindowResolution(info=info, warning=None,\n                                    used_uid=bool(resolved_uid),\n                                    requested_uid=resolved_uid)\n        if window_title:\n            needle = window_title.lower()\n            info = next((w for w in windows if needle in (w.title or "").lower()), None)\n            resolved_uid = info.window_uid if info else None\n            return WindowResolution(info=info, warning=None,\n                                    used_uid=bool(resolved_uid),\n                                    requested_uid=resolved_uid)\n        return WindowResolution(info=None, warning=None,\n                                used_uid=False, requested_uid=None)\n\n    # ── Monitors / DPI (design doc §6.3) ──────────────────────────────────────\n\n    def get_monitors(self) -> List[Dict[str, Any]]:\n        """Return per-monitor metadata via mss."""\n        try:\n            import mss\n            with mss.mss() as sct:\n                mons = sct.monitors  # [0] is union; [1..] are individual\n                out: List[Dict[str, Any]] = []\n                for i, m in enumerate(mons[1:]):\n                    out.append({\n                        "index": i,\n                        "primary": (i == 0),\n                        "bounds":  {"x": m["left"], "y": m["top"],\n                                    "width": m["width"], "height": m["height"]},\n                        "scale_factor": 1.0,\n                        "logical_bounds":  {"x": m["left"], "y": m["top"],\n                                            "width": m["width"], "height": m["height"]},\n                        "physical_bounds": {"x": m["left"], "y": m["top"],\n                                            "width": m["width"], "height": m["height"]},\n                    })\n                return out\n        except Exception:\n            return []\n\n    # ── Capability discovery (design doc §6.4) ────────────────────────────────\n\n    def get_capabilities(self) -> Dict[str, Any]:\n        adapter_name = type(self._adapter).__name__\n        is_windows = adapter_name == "WindowsAdapter"\n        is_macos   = adapter_name == "MacOSAdapter"\n        is_wsl     = adapter_name == "WSLAdapter"\n        is_linux   = adapter_name in ("LinuxAdapter", "WSLAdapter")\n        is_mock    = adapter_name == "MockAdapter"\n\n        # Probe optional libs.\n        def _has(mod: str) -> bool:\n            try:\n                __import__(mod)\n                return True\n            except Exception:\n                return False\n\n        if is_macos:\n            ax_tree = _has("AppKit") or _has("ApplicationServices") or _has("Cocoa")\n        elif is_linux:\n            ax_tree = _has("pyatspi")\n        else:\n            ax_tree = is_windows or is_mock\n\n        return {\n            "ok": True,\n            "platform": EFFECTIVE_PLATFORM,\n            "adapter": adapter_name,\n            "version": (self.config.get("mcp", {}) or {}).get("version", "0.2.0"),\n            "protocol_version": 2,\n            "supports": {\n                "accessibility_tree":  bool(ax_tree),\n                "uia_invoke":          is_windows,\n                "occlusion_detection": is_windows or is_mock or _has("Quartz") or _has("Xlib"),\n                "drag":                True,\n                "ocr":                 _has("pytesseract"),\n                "vlm":                 bool((self.config.get("vlm") or {}).get("enabled")\n                                            and (self.config.get("vlm") or {}).get("model")),\n                "redaction":           True,\n                "scenarios":           is_mock,\n                "tracing":             True,\n                "replay":              True,\n                "image_blur":          _has("PIL"),\n                "wsl_powershell":      is_wsl,\n                # Action capabilities always present via REST + MCP.\n                "bring_to_foreground": True,\n                "element_targeting":   bool(ax_tree),  # click/focus/invoke/set_value via element_id\n                "observe_with_diff":   True,            # /api/observe returns diff token\n            },\n            "config": {\n                "tree_max_depth": (self.config.get("tree", {}) or {}).get("max_depth", 8),\n                "ascii_grid": {\n                    "width":  (self.config.get("ascii_sketch", {}) or {}).get("grid_width",  110),\n                    "height": (self.config.get("ascii_sketch", {}) or {}).get("grid_height",  38),\n                },\n            },\n        }\n\n    # ── Element occlusion (design doc D14) ────────────────────────────────────\n\n    def is_element_occluded(self, element_bounds: Bounds, target_hwnd: Any,\n                            all_windows: List[WindowInfo]) -> bool:\n        """\n        True iff every pixel of *element_bounds* is covered by another window\n        above the target in Z-order, or the element lies entirely off-screen.\n\n        On platforms without Z-order info, returns False (assumed visible).\n        """\n        screen = self.get_screen_bounds()\n        clipped = _intersect_bounds(element_bounds, screen)\n        if not clipped:\n            return True\n        regions = [clipped]\n        try:\n            occluders = self._adapter.get_windows_above_bounds(target_hwnd)\n        except Exception:\n            occluders = []\n        for occ in occluders:\n            regions = _subtract_rect(regions, occ)\n        return not regions\n\n    # ── Visibility helpers ────────────────────────────────────────────────────\n\n    def get_screen_bounds(self) -> Bounds:\n        """Return the bounding rect of the combined virtual screen (all monitors)."""\n        try:\n            import mss\n            with mss.mss() as sct:\n                m = sct.monitors[0]   # index 0 = union of all monitors\n                return Bounds(m["left"], m["top"], m["width"], m["height"])\n        except Exception:\n            return Bounds(0, 0, 65535, 65535)\n\n    def get_visible_areas(self, target_hwnd: Any,\n                          all_windows: List[WindowInfo]) -> List[Dict]:\n        """\n        Return a list of {x, y, width, height} dicts for the portions of the\n        window identified by *target_hwnd* that are on-screen and not covered\n        by windows above it in Z-order.\n\n        On Windows the Z-order is queried precisely via win32gui.\n        On macOS/Linux Z-order is unavailable, so the full clipped-to-screen\n        bounds are returned (assuming the window is on top).\n        """\n        target = next((w for w in all_windows if w.handle == target_hwnd), None)\n        if target is None:\n            return []\n\n        screen   = self.get_screen_bounds()\n        clipped  = _intersect_bounds(target.bounds, screen)\n        if not clipped:\n            return []\n\n        visible: List[Bounds] = [clipped]\n        occluders = self._adapter.get_windows_above_bounds(target_hwnd)\n        for occ in occluders:\n            visible = _subtract_rect(visible, occ)\n\n        return [b.to_dict() for b in visible]\n\n    def bring_to_foreground(self, target_hwnd: Any,\n                            all_windows: List[WindowInfo]) -> Dict:\n        """\n        Bring a window to the foreground.\n\n        Strategy (in order)\n        -------------------\n        1. Platform API — SetForegroundWindow / NSRunningApplication.activate /\n           wmctrl.  Does not click, so it cannot accidentally maximise the window\n           and works even when the window is fully occluded.\n        2. Click on title bar — fallback when the API call is unavailable or\n           blocked (e.g. Windows foreground-lock policy).  Requires at least one\n           visible pixel; returns an error only when this is also impossible.\n        """\n        target = next((w for w in all_windows if w.handle == target_hwnd), None)\n        if target is None:\n            return {"success": False, "error": "Window not found"}\n\n        # ── 1. Try platform API first ─────────────────────────────────────────\n        api_ok, api_note = self._activate_via_api(target_hwnd, target)\n        if api_ok:\n            return {"success": True, "action": "activate_api",\n                    "window": target.title, "note": api_note}\n\n        # ── 2. Fall back to clicking the title bar ────────────────────────────\n        regions = self.get_visible_areas(target_hwnd, all_windows)\n        if not regions:\n            return {\n                "success": False,\n                "error": (\n                    "Window has no visible area (fully occluded or off-screen) "\n                    f"and platform API also failed: {api_note}"\n                ),\n            }\n\n        best = min(regions, key=lambda r: (r["y"], -r["width"]))\n        click_x, click_y = self._title_bar_click_point(target_hwnd, target, best)\n        result = self.perform_action("click_at",\n                                     value={"x": click_x, "y": click_y,\n                                            "button": "left", "double": False})\n        result["clicked_x"] = click_x\n        result["clicked_y"] = click_y\n        result.setdefault("action", "click_title_bar")\n        result["api_note"] = api_note\n        return result\n\n    def _activate_via_api(self, hwnd: Any,\n                          info: "WindowInfo") -> tuple:\n        """\n        Attempt to raise *hwnd* using the platform's native window-focus API.\n\n        Returns (success: bool, note: str).  Never raises — all errors are\n        caught and returned as (False, reason).\n        """\n        if PLATFORM == "Windows":\n            return self._activate_windows(hwnd)\n        if PLATFORM == "Darwin":\n            return self._activate_macos(info)\n        if PLATFORM == "Linux":\n            # WSL: try X11 tools (wmctrl/xdotool) when DISPLAY is set; they\n            # will gracefully fail and return (False, reason) when absent.\n            return self._activate_linux(hwnd)\n        return False, f"Platform {PLATFORM!r} has no API activate implementation"\n\n    def _activate_windows(self, hwnd: int) -> tuple:\n        try:\n            import ctypes\n            import ctypes.wintypes\n            user32   = ctypes.windll.user32\n            kernel32 = ctypes.windll.kernel32\n\n            # Restore if minimised (IsIconic) or hidden.\n            if user32.IsIconic(hwnd):\n                user32.ShowWindow(hwnd, 9)  # SW_RESTORE\n\n            def _is_foreground() -> bool:\n                return user32.GetForegroundWindow() == hwnd\n\n            if _is_foreground():\n                return True, "already foreground"\n\n            # ── Attempt 1: AttachThreadInput trick ────────────────────────────\n            fg_hwnd  = user32.GetForegroundWindow()\n            fg_tid   = user32.GetWindowThreadProcessId(fg_hwnd, None)\n            this_tid = kernel32.GetCurrentThreadId()\n            attached = False\n            if fg_tid and fg_tid != this_tid:\n                attached = bool(user32.AttachThreadInput(this_tid, fg_tid, True))\n            try:\n                user32.SetForegroundWindow(hwnd)\n            finally:\n                if attached:\n                    user32.AttachThreadInput(this_tid, fg_tid, False)\n\n            if _is_foreground():\n                return True, "SetForegroundWindow (AttachThreadInput)"\n\n            # ── Attempt 2: synthesise a keypress to acquire foreground lock ───\n            # Windows grants foreground rights to processes that just received\n            # user input.  A zero-vkey keybd_event satisfies that requirement.\n            KEYEVENTF_KEYUP = 0x0002\n            user32.keybd_event(0, 0, 0, 0)\n            user32.keybd_event(0, 0, KEYEVENTF_KEYUP, 0)\n            user32.SetForegroundWindow(hwnd)\n\n            if _is_foreground():\n                return True, "SetForegroundWindow (keybd_event unlock)"\n\n            # ── Attempt 3: BringWindowToTop + SetForegroundWindow ─────────────\n            user32.BringWindowToTop(hwnd)\n            user32.SetForegroundWindow(hwnd)\n\n            if _is_foreground():\n                return True, "BringWindowToTop + SetForegroundWindow"\n\n            return False, "SetForegroundWindow failed after all attempts"\n        except Exception as e:\n            return False, f"Windows API error: {e}"\n\n    def _activate_macos(self, info: "WindowInfo") -> tuple:\n        try:\n            import AppKit\n            ws   = AppKit.NSWorkspace.sharedWorkspace()\n            apps = ws.runningApplications()\n            pid  = info.pid\n            for app in apps:\n                if int(app.processIdentifier()) == pid:\n                    NSApplicationActivateIgnoringOtherApps = 1 << 1\n                    app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)\n                    return True, f"NSRunningApplication.activate pid={pid}"\n            return False, f"No running application found for pid={pid}"\n        except Exception as e:\n            return False, f"macOS API error: {e}"\n\n    def _activate_linux(self, hwnd: int) -> tuple:\n        import subprocess\n        # Try wmctrl first (X11; commonly available).\n        try:\n            r = subprocess.run(\n                ["wmctrl", "-ia", hex(hwnd)],\n                capture_output=True, timeout=3,\n            )\n            if r.returncode == 0:\n                return True, f"wmctrl -ia {hex(hwnd)} succeeded"\n        except FileNotFoundError:\n            pass\n        except Exception as e:\n            return False, f"wmctrl error: {e}"\n        # Try xdotool as a second option.\n        try:\n            r = subprocess.run(\n                ["xdotool", "windowactivate", "--sync", str(hwnd)],\n                capture_output=True, timeout=3,\n            )\n            if r.returncode == 0:\n                return True, f"xdotool windowactivate {hwnd} succeeded"\n            return False, f"xdotool returned {r.returncode}: {r.stderr.decode().strip()}"\n        except FileNotFoundError:\n            return False, "neither wmctrl nor xdotool found"\n        except Exception as e:\n            return False, f"xdotool error: {e}"\n\n    # ── Title-bar targeting (used by bring_to_foreground) ────────────────────\n\n    # Reserve these pixel margins for native window-control widgets.\n    _LEFT_CONTROL_MARGIN  = 90    # macOS traffic-lights\n    _RIGHT_CONTROL_MARGIN = 160   # Windows / Linux minimize/maximize/close\n    _MIN_SAFE_WIDTH       = 260   # below this, fall back to centre\n\n    _TITLEBAR_ROLES = {"TitleBar", "AXTitleBar", "title bar", "Title bar",\n                       "AXWindow"}\n\n    def _title_bar_click_point(self, target_hwnd: Any,\n                                window: Optional["WindowInfo"],\n                                region: Dict) -> tuple:\n        """Return (x, y) for a safe click inside the title bar of *region*."""\n        # 1. Try the accessibility tree.\n        try:\n            tree = self.get_element_tree(target_hwnd)\n        except Exception:\n            tree = None\n        bar = self._find_title_bar(tree, window.title if window else "") if tree else None\n        if bar is not None and bar.bounds and bar.bounds.width > 0:\n            tb = bar.bounds\n            # Intersect with the visible region so we don't click off-screen.\n            x1 = max(region["x"], tb.x)\n            y1 = max(region["y"], tb.y)\n            x2 = min(region["x"] + region["width"],  tb.right)\n            y2 = min(region["y"] + region["height"], tb.bottom)\n            if x2 > x1 and y2 > y1:\n                # Click 1/4 from the left of the title bar's visible width,\n                # but skip the leftmost control margin.\n                safe_left  = x1 + min(self._LEFT_CONTROL_MARGIN,  (x2 - x1) // 4)\n                safe_right = x2 - min(self._RIGHT_CONTROL_MARGIN, (x2 - x1) // 4)\n                if safe_right <= safe_left:\n                    cx = (x1 + x2) // 2\n                else:\n                    quarter = x1 + (x2 - x1) // 4\n                    cx = max(safe_left, min(safe_right, quarter))\n                cy = y1 + max(1, (y2 - y1) // 2)\n                return cx, cy\n\n        # 2. Fall back to the visible region's top strip.\n        rx = region["x"]\n        rw = region["width"]\n        ry = region["y"]\n        rh = region["height"]\n        if rw < self._MIN_SAFE_WIDTH:\n            cx = rx + rw // 2\n        else:\n            safe_left  = rx + self._LEFT_CONTROL_MARGIN\n            safe_right = rx + rw - self._RIGHT_CONTROL_MARGIN\n            candidate  = rx + rw // 4\n            if safe_right <= safe_left:\n                cx = rx + rw // 2\n            else:\n                cx = max(safe_left, min(safe_right, candidate))\n        title_bar_offset = min(12, max(1, (rh - 1) // 2))\n        cy = ry + title_bar_offset\n        # Clamp inside the region.\n        cx = max(rx, min(rx + rw - 1, cx))\n        cy = max(ry, min(ry + rh - 1, cy))\n        return cx, cy\n\n    def _find_title_bar(self, root: Optional["UIElement"],\n                         window_title: str) -> Optional["UIElement"]:\n        """Locate a title-bar-like element by role or by matching name.\n\n        Returns None for the root window itself (clicking the whole window's\n        center is precisely what we are trying to avoid).\n        """\n        if root is None:\n            return None\n        from collections import deque\n        queue = deque([(root, 0)])\n        while queue:\n            elem, depth = queue.popleft()\n            # Never return the root — its centre is the window body, not the\n            # title bar.\n            if depth > 0:\n                if (elem.role or "") in self._TITLEBAR_ROLES:\n                    return elem\n                if window_title and (elem.name or "").strip() == window_title.strip():\n                    # Must be near the top edge AND short — a real title bar.\n                    if (elem.bounds and root.bounds\n                            and (elem.bounds.y - root.bounds.y) < 40\n                            and elem.bounds.height <= 48):\n                        return elem\n            if depth > 3:\n                continue\n            for c in elem.children:\n                queue.append((c, depth + 1))\n        return None\n\n\n# ─────────────────────────────────────────────────────────────────────────────\n# Rectangle geometry helpers\n# ─────────────────────────────────────────────────────────────────────────────\n\ndef _intersect_bounds(a: Bounds, b: Bounds) -> Optional[Bounds]:\n    x1 = max(a.x, b.x)\n    y1 = max(a.y, b.y)\n    x2 = min(a.right, b.right)\n    y2 = min(a.bottom, b.bottom)\n    if x2 <= x1 or y2 <= y1:\n        return None\n    return Bounds(x1, y1, x2 - x1, y2 - y1)\n\n\ndef _subtract_rect(rects: List[Bounds], occluder: Bounds) -> List[Bounds]:\n    \"\"\"Subtract occluder from each rect, splitting into up to 4 sub-rects.\"\"\"\n    result: List[Bounds] = []\n    for r in rects:\n        ix1 = max(r.x, occluder.x)\n        iy1 = max(r.y, occluder.y)\n        ix2 = min(r.right, occluder.right)\n        iy2 = min(r.bottom, occluder.bottom)\n\n        if ix2 <= ix1 or iy2 <= iy1:\n            result.append(r)\n            continue\n\n        # Top strip\n        if iy1 > r.y:\n            result.append(Bounds(r.x, r.y, r.width, iy1 - r.y))\n        # Bottom strip\n        if iy2 < r.bottom:\n            result.append(Bounds(r.x, iy2, r.width, r.bottom - iy2))\n        # Left strip (height = intersection height)\n        if ix1 > r.x:\n            result.append(Bounds(r.x, iy1, ix1 - r.x, iy2 - iy1))\n        # Right strip (height = intersection height)\n        if ix2 < r.right:\n            result.append(Bounds(ix2, iy1, r.right - ix2, iy2 - iy1))\n    return result\n
+"""
+observer.py — Core screen observation module.
+
+Provides a platform-aware ScreenObserver that exposes a uniform interface
+for: enumerating windows, walking the accessibility element tree, capturing
+screenshots, and dispatching input actions. Platform adapters (Windows/macOS/
+Linux/Mock) share a common base and are selected automatically at runtime.
+
+Data model
+----------
+  Bounds       — screen-coordinate bounding rectangle
+  UIElement    — one node of the accessibility tree
+  WindowInfo   — top-level window metadata
+"""
+
+import io
+import logging
+import os
+import platform
+import traceback
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+PLATFORM = platform.system()
+
+
+def _is_wsl() -> bool:
+    """True when running inside Windows Subsystem for Linux (WSL 1 or WSL 2)."""
+    if PLATFORM != "Linux":
+        return False
+    try:
+        with open("/proc/version") as _f:
+            return "microsoft" in _f.read().lower()
+    except Exception:
+        return False
+
+
+IS_WSL = _is_wsl()
+EFFECTIVE_PLATFORM = "WSL" if IS_WSL else PLATFORM
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Data Structures
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class Bounds:
+    x: int
+    y: int
+    width: int
+    height: int
+
+    @property
+    def right(self) -> int:
+        return self.x + self.width
+
+    @property
+    def bottom(self) -> int:
+        return self.y + self.height
+
+    @property
+    def center_x(self) -> int:
+        return self.x + self.width // 2
+
+    @property
+    def center_y(self) -> int:
+        return self.y + self.height // 2
+
+    def to_dict(self) -> Dict:
+        return {"x": self.x, "y": self.y, "width": self.width, "height": self.height}
+
+    def __bool__(self) -> bool:
+        return self.width > 0 and self.height > 0
+
+
+@dataclass
+class UIElement:
+    element_id: str
+    name: str
+    role: str
+    value: Optional[str] = None
+    bounds: Bounds = field(default_factory=lambda: Bounds(0, 0, 0, 0))
+    enabled: bool = True
+    focused: bool = False
+    keyboard_shortcut: Optional[str] = None
+    description: Optional[str] = None
+    children: List["UIElement"] = field(default_factory=list)
+
+    def to_dict(self) -> Dict:
+        return {
+            "id": self.element_id,
+            "name": self.name,
+            "role": self.role,
+            "value": self.value,
+            "bounds": self.bounds.to_dict(),
+            "enabled": self.enabled,
+            "focused": self.focused,
+            "keyboard_shortcut": self.keyboard_shortcut,
+            "description": self.description,
+            "children": [c.to_dict() for c in self.children],
+        }
+
+    def flat_list(self) -> List["UIElement"]:
+        """Return all elements in this subtree as a flat list (DFS order)."""
+        result = [self]
+        for child in self.children:
+            result.extend(child.flat_list())
+        return result
+
+
+@dataclass
+class WindowInfo:
+    handle: Any          # platform-specific: HWND (int) on Windows; int index elsewhere
+    title: str
+    process_name: str
+    pid: int
+    bounds: Bounds
+    is_focused: bool
+    # Stable cross-call identifier; populated by adapters (design doc §6.1).
+    window_uid: str = ""
+    # Optional multi-monitor metadata (design doc §6.3).  Populated when the
+    # adapter knows; left None on adapters that do not.
+    monitor_index: Optional[int] = None
+    scale_factor: Optional[float] = None
+    logical_bounds: Optional[Bounds] = None
+    physical_bounds: Optional[Bounds] = None
+
+    def to_dict(self) -> Dict:
+        d: Dict[str, Any] = {
+            "handle": str(self.handle),
+            "title": self.title,
+            "process": self.process_name,
+            "pid": self.pid,
+            "bounds": self.bounds.to_dict(),
+            "focused": self.is_focused,
+            "window_uid": self.window_uid,
+        }
+        if self.monitor_index is not None:
+            d["monitor_index"] = self.monitor_index
+        if self.scale_factor is not None:
+            d["scale_factor"] = self.scale_factor
+        if self.logical_bounds is not None:
+            d["logical_bounds"] = self.logical_bounds.to_dict()
+        if self.physical_bounds is not None:
+            d["physical_bounds"] = self.physical_bounds.to_dict()
+        return d
+
+
+# ─── Window resolution result ────────────────────────────────────────────────
+
+@dataclass
+class WindowResolution:
+    info: Optional[WindowInfo]
+    warning: Optional[str]
+    used_uid: bool
+    requested_uid: Optional[str]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Mock Adapter  (no OS dependencies; safe to run in any environment)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MockAdapter:
+    """Synthetic data adapter for development and testing."""
+
+    def __init__(self) -> None:
+        import secrets as _s
+        self._nonce = _s.token_hex(4)
+        # Optional scenario hook (design doc §15.5).  Set by main.py when
+        # --scenario is supplied; methods route through the scenario when
+        # active so that input actions can drive state transitions.
+        self.scenario: Optional[Any] = None
+
+    def get_windows_above_bounds(self, hwnd) -> List["Bounds"]:
+        return []  # Mock assumes the target window is on top
+
+    def list_windows(self) -> List[WindowInfo]:
+        if self.scenario is not None:
+            return self.scenario.list_windows(self._nonce)
+        return [
+            WindowInfo(1001, "Untitled — Notepad", "notepad.exe", 1234,
+                       Bounds(80, 60, 800, 600), True,
+                       window_uid=f"mock:0:{self._nonce}"),
+            WindowInfo(1002, "GitHub · Where software is built — Google Chrome",
+                       "chrome.exe", 5678, Bounds(0, 0, 1920, 1050), False,
+                       window_uid=f"mock:1:{self._nonce}"),
+            WindowInfo(1003, "screen_observer.py — Visual Studio Code",
+                       "code.exe", 9012, Bounds(960, 0, 960, 1050), False,
+                       window_uid=f"mock:2:{self._nonce}"),
+        ]
+
+    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        if self.scenario is not None:
+            return self.scenario.get_element_tree(hwnd)
+        root = UIElement("root", "Untitled — Notepad", "Window",
+                         bounds=Bounds(80, 60, 800, 600))
+
+        # Menu bar
+        menubar = UIElement("root.0", "MenuBar", "MenuBar",
+                            bounds=Bounds(80, 60, 800, 22))
+        for i, lbl in enumerate(["File", "Edit", "Format", "View", "Help"]):
+            menubar.children.append(UIElement(
+                f"root.0.{i}", lbl, "MenuItem",
+                bounds=Bounds(80 + i * 58, 60, 56, 22)
+            ))
+        root.children.append(menubar)
+
+        # Main editing area
+        editor = UIElement(
+            "root.1", "Text Editor", "Document",
+            value="Hello, world!\nThis is a test document.\nLine 3 has some content here.\n",
+            bounds=Bounds(80, 82, 800, 514), focused=True
+        )
+        root.children.append(editor)
+
+        # Horizontal scroll bar
+        hscroll = UIElement("root.2", "Horizontal ScrollBar", "ScrollBar",
+                            bounds=Bounds(80, 596, 784, 18))
+        root.children.append(hscroll)
+
+        # Vertical scroll bar
+        vscroll = UIElement("root.3", "Vertical ScrollBar", "ScrollBar",
+                            bounds=Bounds(864, 82, 18, 532))
+        root.children.append(vscroll)
+
+        # Status bar
+        sb = UIElement("root.4", "Status Bar", "StatusBar",
+                       bounds=Bounds(80, 614, 800, 22))
+        for i, (lbl, val) in enumerate([
+            ("Position",  "Ln 1, Col 1"),
+            ("Zoom",      "100%"),
+            ("Encoding",  "UTF-8"),
+            ("EOL",       "Windows (CRLF)"),
+        ]):
+            sb.children.append(UIElement(
+                f"root.4.{i}", lbl, "Text", value=val,
+                bounds=Bounds(80 + i * 190, 614, 188, 22)
+            ))
+        root.children.append(sb)
+
+        return root
+
+    def get_screenshot(self, hwnd=None) -> Optional[bytes]:
+        try:
+            from PIL import Image, ImageDraw
+            img = Image.new("RGB", (800, 600), "#1a1e2e")
+            draw = ImageDraw.Draw(img)
+
+            # Title bar
+            draw.rectangle([0, 0, 800, 30], fill="#2d3250")
+            draw.text((10, 8), "Untitled — Notepad", fill="#c8d3f5")
+
+            # Menu bar
+            draw.rectangle([0, 30, 800, 52], fill="#1e2030")
+            for i, m in enumerate(["File", "Edit", "Format", "View", "Help"]):
+                draw.text((10 + i * 58, 36), m, fill="#a9b1d6")
+
+            # Editor area
+            draw.rectangle([0, 52, 782, 570], fill="#1a1e2e")
+            for i, ln in enumerate(["Hello, world!", "This is a test document.",
+                                     "Line 3 has some content here.", ""]):
+                draw.text((6, 58 + i * 18), ln, fill="#c0caf5")
+
+            # Scrollbars
+            draw.rectangle([782, 52, 800, 570], fill="#24283b")
+            draw.rectangle([0, 570, 782, 586], fill="#24283b")
+
+            # Status bar
+            draw.rectangle([0, 586, 800, 600], fill="#16161e")
+            draw.text((6, 589), "Ln 1, Col 1     100%     UTF-8     Windows (CRLF)",
+                      fill="#565f89")
+
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            return buf.getvalue()
+        except Exception as e:
+            print(f"[MockAdapter:get_screenshot] {e}")
+            traceback.print_exc()
+            return None
+
+    def perform_action(self, action: str, element_id: str = None,
+                       value: Any = None, hwnd=None) -> Dict:
+        if self.scenario is not None:
+            handled = self.scenario.handle_action(action=action,
+                                                   element_id=element_id,
+                                                   value=value, hwnd=hwnd)
+            if handled is not None:
+                return handled
+        return {
+            "success": True,
+            "action": action,
+            "note": "Mock adapter — no real OS action performed",
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UIA control-type ID → pywinauto-compatible role name.
+# Values from UIAutomationClient.h; must match what selectors/descriptions expect.
+_UIA_TYPE_TO_ROLE: Dict[int, str] = {
+    50000: "Button",      50001: "Calendar",    50002: "CheckBox",
+    50003: "ComboBox",    50004: "Edit",         50005: "Hyperlink",
+    50006: "Image",       50007: "ListItem",     50008: "ListBox",
+    50009: "Menu",        50010: "MenuBar",      50011: "MenuItem",
+    50012: "ProgressBar", 50013: "RadioButton",  50014: "ScrollBar",
+    50015: "Slider",      50016: "Spinner",      50017: "StatusBar",
+    50018: "TabControl",  50019: "TabItem",      50020: "Text",
+    50021: "Toolbar",     50022: "ToolTip",      50023: "Tree",
+    50024: "TreeItem",    50025: "Custom",       50026: "GroupBox",
+    50027: "Thumb",       50028: "DataGrid",     50029: "DataItem",
+    50030: "Document",    50031: "SplitButton",  50032: "Dialog",
+    50033: "Pane",        50034: "Header",       50035: "HeaderItem",
+    50036: "Table",       50037: "TitleBar",     50038: "Separator",
+    50039: "SemanticZoom",50040: "AppBar",
+}
+
+
+# Windows Adapter  (requires: pywinauto, pywin32, psutil)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WindowsAdapter:
+    """Full Windows UIA adapter using pywinauto + pywin32."""
+
+    def __init__(self, config: dict):
+        self.config = config
+        try:
+            import win32gui    # noqa: F401
+            import win32process  # noqa: F401
+            import psutil      # noqa: F401
+            from pywinauto import Application  # noqa: F401
+            self._Application = Application
+            logger.info("[WindowsAdapter:__init__] pywinauto/pywin32 ready")
+        except ImportError as e:
+            print(f"[WindowsAdapter:__init__] Missing dependency: {e}")
+            traceback.print_exc()
+            raise
+
+    def list_windows(self) -> List[WindowInfo]:
+        try:
+            import win32gui
+            import win32process
+            import psutil
+
+            results: List[WindowInfo] = []
+            fg = win32gui.GetForegroundWindow()
+
+            def _cb(hwnd, _):
+                try:
+                    if not win32gui.IsWindowVisible(hwnd):
+                        return
+                    title = win32gui.GetWindowText(hwnd)
+                    if not title:
+                        return
+                    rect = win32gui.GetWindowRect(hwnd)
+                    w, h = rect[2] - rect[0], rect[3] - rect[1]
+                    if w <= 0 or h <= 0:
+                        return
+                    try:
+                        _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                        proc_name = psutil.Process(pid).name()
+                    except Exception:
+                        pid, proc_name = 0, "unknown"
+                    results.append(WindowInfo(
+                        handle=hwnd, title=title, process_name=proc_name, pid=pid,
+                        bounds=Bounds(rect[0], rect[1], w, h),
+                        is_focused=(hwnd == fg),
+                        window_uid=f"win:{pid}:{hwnd}",
+                    ))
+                except Exception as inner:
+                    logger.debug(f"[WindowsAdapter:list_windows:_cb] {inner}")
+
+            win32gui.EnumWindows(_cb, None)
+            return sorted(results, key=lambda w: (not w.is_focused, w.title.lower()))
+        except Exception as e:
+            print(f"[WindowsAdapter:list_windows] {e}")
+            traceback.print_exc()
+            return []
+
+    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:
+        """Return bounds of visible windows that are above hwnd in Z-order."""
+        try:
+            import win32gui
+            GW_HWNDNEXT = 2
+            above: List[Bounds] = []
+            h = win32gui.GetTopWindow(None)
+            while h and h != hwnd:
+                try:
+                    if win32gui.IsWindowVisible(h):
+                        rect = win32gui.GetWindowRect(h)
+                        w = rect[2] - rect[0]
+                        hh = rect[3] - rect[1]
+                        if w > 0 and hh > 0:
+                            above.append(Bounds(rect[0], rect[1], w, hh))
+                except Exception:
+                    pass
+                try:
+                    h = win32gui.GetWindow(h, GW_HWNDNEXT)
+                except Exception:
+                    break
+            return above
+        except Exception as e:
+            logger.debug(f"[WindowsAdapter:get_windows_above_bounds] {e}")
+            return []
+
+    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        try:
+            import win32gui
+            if hwnd is None:
+                hwnd = win32gui.GetForegroundWindow()
+        except Exception as e:
+            print(f"[WindowsAdapter:get_element_tree] win32gui: {e}")
+            return None
+
+        # Run both walkers and synthesise: UIA crosses Chromium fragment boundaries
+        # (gets web content); pywinauto may surface native-control properties that
+        # UIA omits.  The merged result gives the LLM everything either source sees.
+        uia_tree = self._uia_walk(hwnd)
+        pw_tree  = None
+        try:
+            app = self._Application(backend="uia").connect(handle=hwnd)
+            window = app.window(handle=hwnd)
+            wrapper = window.wrapper_object()
+            max_depth = self.config.get("tree", {}).get("max_depth", 8)
+            pw_tree = self._walk(wrapper, "root", 0, max_depth)
+        except Exception as e:
+            logger.debug(f"[WindowsAdapter:get_element_tree] pywinauto: {e}")
+
+        if uia_tree is None and pw_tree is None:
+            return None
+        if uia_tree is None:
+            return pw_tree
+        if pw_tree is None:
+            return uia_tree
+        return self._synthesize_trees(uia_tree, pw_tree)
+
+    def _uia_walk(self, hwnd: int) -> Optional[UIElement]:
+        """Walk the accessibility tree via raw IUIAutomation COM calls.
+
+        pywinauto's children() falls back to EnumChildWindows for HWND-backed
+        elements (e.g. Chrome_RenderWidgetHostHWND), missing all web content.
+        Using FindAll(TreeScope_Children) directly on the IUIAutomationElement
+        always uses UIA and correctly crosses Chromium fragment boundaries.
+        """
+        try:
+            # pywinauto already initialised comtypes/UIA at import time.
+            # Retrieve the raw IUIAutomation COM interface from pywinauto's singleton.
+            from pywinauto.uia_defines import IUIA
+            _iuia_obj = IUIA()
+            # pywinauto ≥0.6 exposes it as .iuia; older versions expose it directly.
+            raw_uia = getattr(_iuia_obj, "iuia", _iuia_obj)
+
+            root = raw_uia.ElementFromHandle(hwnd)
+            true_cond = raw_uia.CreateTrueCondition()
+            max_depth = self.config.get("tree", {}).get("max_depth", 8)
+
+            # UIA property IDs (UIAutomationClient.h)
+            _NAME        = 30005
+            _CTRL_TYPE   = 30003
+            _ENABLED     = 30010
+            _FOCUSED     = 30008
+            _VALUE       = 30045
+            _ACCESS_KEY  = 30023   # keyboard mnemonic, e.g. "Alt+F"
+            _ACCEL_KEY   = 30022   # accelerator, e.g. "Ctrl+Z"
+            _HELP_TEXT   = 30013   # tooltip / description
+            _SCOPE_CHILDREN = 0x2
+
+            def _prop(elem, pid, default=None):
+                try:
+                    v = elem.GetCurrentPropertyValue(pid)
+                    return v if v is not None else default
+                except Exception:
+                    return default
+
+            def walk(elem, elem_id: str, depth: int) -> UIElement:
+                name = _prop(elem, _NAME, "") or ""
+                ctrl = _prop(elem, _CTRL_TYPE, 0) or 0
+                role = _UIA_TYPE_TO_ROLE.get(ctrl, "Pane")
+                try:
+                    r = elem.CurrentBoundingRectangle
+                    bounds = Bounds(r.left, r.top, r.right - r.left, r.bottom - r.top)
+                except Exception:
+                    bounds = Bounds(0, 0, 0, 0)
+                enabled = bool(_prop(elem, _ENABLED, True))
+                focused = bool(_prop(elem, _FOCUSED, False))
+                value   = _prop(elem, _VALUE) or None
+                # Keyboard shortcut: prefer access key, fall back to accelerator.
+                ks = _prop(elem, _ACCESS_KEY) or _prop(elem, _ACCEL_KEY) or None
+                desc = _prop(elem, _HELP_TEXT) or None
+                node = UIElement(
+                    element_id=elem_id, name=name, role=role, value=value,
+                    bounds=bounds, enabled=enabled, focused=focused,
+                    keyboard_shortcut=ks or None,
+                    description=desc or None,
+                )
+                if depth < max_depth:
+                    try:
+                        kids = elem.FindAll(_SCOPE_CHILDREN, true_cond)
+                        for i in range(kids.Length):
+                            node.children.append(
+                                walk(kids.GetElement(i), f"{elem_id}.{i}", depth + 1)
+                            )
+                    except Exception:
+                        pass
+                return node
+
+            return walk(root, "root", 0)
+        except Exception as e:
+            logger.debug(f"[WindowsAdapter:_uia_walk] {e}")
+            return None
+
+    def _walk(self, wrapper, elem_id: str, depth: int, max_depth: int) -> UIElement:
+        try:
+            try:
+                rect = wrapper.rectangle()
+                bounds = Bounds(rect.left, rect.top,
+                                rect.right - rect.left, rect.bottom - rect.top)
+            except Exception:
+                bounds = Bounds(0, 0, 0, 0)
+
+            try:
+                name = wrapper.window_text() or ""
+            except Exception:
+                name = ""
+
+            try:
+                role = wrapper.friendly_class_name() or "Unknown"
+            except Exception:
+                role = "Unknown"
+
+            try:
+                value = wrapper.get_value() if hasattr(wrapper, "get_value") else None
+            except Exception:
+                value = None
+
+            try:
+                enabled = wrapper.is_enabled()
+            except Exception:
+                enabled = True
+
+            try:
+                focused = wrapper.has_keyboard_focus()
+            except Exception:
+                focused = False
+
+            elem = UIElement(
+                element_id=elem_id, name=name, role=role, value=value,
+                bounds=bounds, enabled=enabled, focused=focused,
+            )
+
+            if depth < max_depth:
+                try:
+                    for i, child in enumerate(wrapper.children()):
+                        elem.children.append(
+                            self._walk(child, f"{elem_id}.{i}", depth + 1, max_depth)
+                        )
+                except Exception as ce:
+                    logger.debug(f"[WindowsAdapter:_walk:{elem_id}:children] {ce}")
+
+            return elem
+        except Exception as e:
+            print(f"[WindowsAdapter:_walk:{elem_id}] {e}")
+            traceback.print_exc()
+            return UIElement(elem_id, "[error]", "Unknown", bounds=Bounds(0, 0, 0, 0))
+
+    def _synthesize_trees(self, primary: UIElement, secondary: UIElement) -> UIElement:
+        """Merge two accessibility trees into one richer tree.
+
+        Uses the primary (UIA) tree as the base — it sees web content.
+        For each node in secondary (pywinauto) matched by bounds, enrich the
+        primary node with any non-empty properties the primary is missing.
+        Secondary nodes whose bounds don't appear anywhere in the primary tree
+        are injected under the deepest primary ancestor that contains them.
+        """
+        # Build a flat index of primary nodes keyed by (x, y, w, h).
+        bounds_index: Dict[tuple, UIElement] = {}
+
+        def _index(node: UIElement) -> None:
+            key = (node.bounds.x, node.bounds.y, node.bounds.width, node.bounds.height)
+            if key not in bounds_index:
+                bounds_index[key] = node
+            for c in node.children:
+                _index(c)
+
+        _index(primary)
+
+        # Enrich matched nodes; collect unmatched ones with their bounds.
+        unmatched: List[UIElement] = []
+
+        def _enrich(node: UIElement) -> None:
+            key = (node.bounds.x, node.bounds.y, node.bounds.width, node.bounds.height)
+            target = bounds_index.get(key)
+            if target is not None:
+                # Copy over properties the primary left empty.
+                if not target.keyboard_shortcut and node.keyboard_shortcut:
+                    target.keyboard_shortcut = node.keyboard_shortcut
+                if not target.description and node.description:
+                    target.description = node.description
+                if not target.value and node.value:
+                    target.value = node.value
+            else:
+                # Not in primary — keep for injection.
+                w, h = node.bounds.width, node.bounds.height
+                if w > 0 and h > 0:   # ignore zero-size ghost elements
+                    unmatched.append(node)
+            for c in node.children:
+                _enrich(c)
+
+        _enrich(secondary)
+
+        # Inject unmatched secondary nodes under the deepest primary ancestor
+        # whose bounds contain them (largest-area match wins → most specific).
+        def _contains(outer: Bounds, inner: Bounds) -> bool:
+            return (outer.x <= inner.x and outer.y <= inner.y and
+                    outer.x + outer.width  >= inner.x + inner.width and
+                    outer.y + outer.height >= inner.y + inner.height)
+
+        for node in unmatched:
+            best: Optional[UIElement] = None
+            best_area = float("inf")
+            for pnode in bounds_index.values():
+                if _contains(pnode.bounds, node.bounds):
+                    area = pnode.bounds.width * pnode.bounds.height
+                    if area < best_area:
+                        best_area = area
+                        best = pnode
+            if best is None:
+                best = primary
+            # Renumber the injected element_id to avoid collisions.
+            node.element_id = f"{best.element_id}.x{len(best.children)}"
+            best.children.append(node)
+
+        return primary
+
+    def get_screenshot(self, hwnd=None) -> Optional[bytes]:
+        try:
+            import win32gui
+            import win32ui
+            from PIL import Image
+            import ctypes
+
+            if hwnd is None:
+                hwnd = win32gui.GetForegroundWindow()
+
+            rect = win32gui.GetWindowRect(hwnd)
+            width = rect[2] - rect[0]
+            height = rect[3] - rect[1]
+
+            if width <= 0 or height <= 0:
+                return None
+
+            hwnd_dc = win32gui.GetWindowDC(hwnd)
+            mfc_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+            save_dc = mfc_dc.CreateCompatibleDC()
+            save_bmp = win32ui.CreateBitmap()
+            save_bmp.CreateCompatibleBitmap(mfc_dc, width, height)
+            save_dc.SelectObject(save_bmp)
+
+            # PW_RENDERFULLCONTENT (0x2) renders hardware-accelerated content too
+            ok = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
+
+            bmpinfo = save_bmp.GetInfo()
+            bmpstr = save_bmp.GetBitmapBits(True)
+
+            win32gui.DeleteObject(save_bmp.GetHandle())
+            save_dc.DeleteDC()
+            mfc_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, hwnd_dc)
+
+            if ok:
+                img = Image.frombuffer(
+                    "RGB",
+                    (bmpinfo["bmWidth"], bmpinfo["bmHeight"]),
+                    bmpstr, "raw", "BGRX", 0, 1,
+                )
+                buf = io.BytesIO()
+                img.save(buf, "PNG")
+                return buf.getvalue()
+
+            # PrintWindow failed — fall back to screen-region capture
+            logger.warning("[WindowsAdapter:get_screenshot] PrintWindow failed; falling back to mss")
+            raise RuntimeError("PrintWindow returned 0")
+
+        except Exception as e:
+            logger.debug(f"[WindowsAdapter:get_screenshot] PrintWindow path failed ({e}); trying mss")
+            try:
+                import mss
+                from PIL import Image
+                import win32gui
+
+                with mss.mss() as sct:
+                    if hwnd:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        region = {"left": rect[0], "top": rect[1],
+                                  "width": rect[2] - rect[0], "height": rect[3] - rect[1]}
+                    else:
+                        region = sct.monitors[1]
+                    raw = sct.grab(region)
+                    img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                    buf = io.BytesIO()
+                    img.save(buf, "PNG")
+                    return buf.getvalue()
+            except Exception as e2:
+                print(f"[WindowsAdapter:get_screenshot] {e2}")
+                traceback.print_exc()
+                return None
+
+    def perform_action(self, action: str, element_id: str = None,
+                       value: Any = None, hwnd=None) -> Dict:
+        try:
+            import pyautogui
+
+            if action == "type" and value:
+                pyautogui.write(str(value), interval=0.02)
+                return {"success": True, "action": "type", "text": value}
+
+            elif action == "key" and value:
+                keys = str(value).lower().split("+")
+                pyautogui.hotkey(*keys)
+                return {"success": True, "action": "key", "keys": value}
+
+            elif action == "click_at" and isinstance(value, dict):
+                pyautogui.click(value["x"], value["y"])
+                return {"success": True, "action": "click_at", **value}
+
+            elif action == "scroll" and isinstance(value, dict):
+                pyautogui.scroll(value.get("clicks", 3), x=value.get("x"), y=value.get("y"))
+                return {"success": True, "action": "scroll"}
+
+            else:
+                return {"success": False, "error": f"Unsupported action: {action}"}
+        except Exception as e:
+            print(f"[WindowsAdapter:perform_action] {e}")
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# macOS Adapter  (screenshot works; AX tree is a stub pending pyobjc work)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class MacOSAdapter:
+    def __init__(self, config: dict):
+        self.config = config
+        logger.info("[MacOSAdapter:__init__] macOS adapter loaded (AX tree is stub)")
+
+    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:
+        return []  # Z-order unavailable without Quartz CGWindowList
+
+    def list_windows(self) -> List[WindowInfo]:
+        try:
+            import subprocess
+            script = ('tell application "System Events" to get name of every '
+                      'process whose background only is false')
+            r = subprocess.run(["osascript", "-e", script],
+                               capture_output=True, text=True, timeout=5)
+            apps = [a.strip() for a in r.stdout.split(",") if a.strip()]
+            return [WindowInfo(i, a, a, 0, Bounds(0, 0, 1920, 1080), i == 0,
+                               window_uid=f"mac:{i}")
+                    for i, a in enumerate(apps)]
+        except Exception as e:
+            print(f"[MacOSAdapter:list_windows] {e}")
+            traceback.print_exc()
+            return []
+
+    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        logger.warning("[MacOSAdapter:get_element_tree] Full AX tree requires pyobjc; returning stub")
+        return UIElement("root", "macOS Application (AX tree stub)", "Window",
+                         bounds=Bounds(0, 0, 1920, 1080))
+
+    def get_screenshot(self, hwnd=None) -> Optional[bytes]:
+        try:
+            import mss
+            from PIL import Image
+            with mss.mss() as sct:
+                raw = sct.grab(sct.monitors[1])
+                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                buf = io.BytesIO()
+                img.save(buf, "PNG")
+                return buf.getvalue()
+        except Exception as e:
+            print(f"[MacOSAdapter:get_screenshot] {e}")
+            traceback.print_exc()
+            return None
+
+    def perform_action(self, action: str, element_id=None,
+                       value: Any = None, hwnd=None) -> Dict:
+        try:
+            import pyautogui
+            if action == "type" and value:
+                pyautogui.write(str(value), interval=0.02)
+                return {"success": True}
+            if action == "key" and value:
+                pyautogui.hotkey(*str(value).lower().split("+"))
+                return {"success": True}
+            return {"success": False, "error": f"Unsupported: {action}"}
+        except Exception as e:
+            print(f"[MacOSAdapter:perform_action] {e}")
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Linux Adapter  (screenshot works; AT-SPI tree is stub pending pyatspi work)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class LinuxAdapter:
+    def __init__(self, config: dict):
+        self.config = config
+        logger.info("[LinuxAdapter:__init__] Linux adapter loaded (AT-SPI tree is stub)")
+
+    def get_windows_above_bounds(self, hwnd) -> List[Bounds]:
+        return []  # Z-order unavailable without Xlib/wnck
+
+    def list_windows(self) -> List[WindowInfo]:
+        try:
+            import subprocess
+            r = subprocess.run(["wmctrl", "-lG"], capture_output=True, text=True, timeout=5)
+            windows = []
+            for line in r.stdout.strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split(None, 8)
+                if len(parts) < 8:
+                    continue
+                hwnd = int(parts[0], 16)
+                x, y, w, h = int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5])
+                title = parts[8] if len(parts) > 8 else "(no title)"
+                windows.append(WindowInfo(hwnd, title, title, 0,
+                                          Bounds(x, y, w, h), False,
+                                          window_uid=f"x11:{hwnd:x}"))
+            return windows
+        except Exception as e:
+            print(f"[LinuxAdapter:list_windows] {e}")
+            traceback.print_exc()
+            return []
+
+    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        logger.warning("[LinuxAdapter:get_element_tree] Full tree requires pyatspi; returning stub")
+        return UIElement("root", "Linux Application (AT-SPI stub)", "Window",
+                         bounds=Bounds(0, 0, 1920, 1080))
+
+    def get_screenshot(self, hwnd=None) -> Optional[bytes]:
+        # mss needs a running X server (DISPLAY must be set).
+        try:
+            import mss
+            from PIL import Image
+            with mss.mss() as sct:
+                raw = sct.grab(sct.monitors[1])
+                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                buf = io.BytesIO()
+                img.save(buf, "PNG")
+                return buf.getvalue()
+        except Exception as e:
+            logger.debug("[LinuxAdapter:get_screenshot] mss failed: %s; trying scrot", e)
+        # scrot can write PNG directly to stdout (-z suppresses notifications).
+        try:
+            import subprocess
+            r = subprocess.run(["scrot", "-z", "-"], capture_output=True, timeout=10)
+            if r.returncode == 0 and r.stdout:
+                return r.stdout
+        except Exception as e:
+            logger.debug("[LinuxAdapter:get_screenshot] scrot failed: %s", e)
+        return None
+
+    def perform_action(self, action: str, element_id=None,
+                       value: Any = None, hwnd=None) -> Dict:
+        try:
+            import pyautogui
+            if action == "type" and value:
+                pyautogui.write(str(value), interval=0.02)
+                return {"success": True}
+            if action == "key" and value:
+                pyautogui.hotkey(*str(value).lower().split("+"))
+                return {"success": True}
+            return {"success": False, "error": f"Unsupported: {action}"}
+        except Exception as e:
+            print(f"[LinuxAdapter:perform_action] {e}")
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WSL Adapter  (WSL 1 + WSL 2: X11 when DISPLAY is set, PowerShell fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WSLAdapter(LinuxAdapter):
+    """Adapter for Windows Subsystem for Linux.
+
+    Prefers X11-based tools (wmctrl, mss) when DISPLAY is set.  Falls back to
+    PowerShell / cmd.exe interop, which is always available in both WSL 1 and
+    WSL 2 via the Windows binary execution layer.
+    """
+
+    def __init__(self, config: dict) -> None:
+        self.config = config
+        self._has_display = bool(os.environ.get("DISPLAY"))
+        logger.info(
+            "[WSLAdapter:__init__] WSL detected; "
+            "DISPLAY=%s", "set" if self._has_display else "not set (PowerShell fallback active)",
+        )
+
+    # ── Window listing ────────────────────────────────────────────────────────
+
+    def list_windows(self) -> List[WindowInfo]:
+        if self._has_display:
+            result = LinuxAdapter.list_windows(self)
+            if result:
+                return result
+        return self._list_windows_ps()
+
+    def _list_windows_ps(self) -> List[WindowInfo]:
+        """Enumerate visible Windows windows via PowerShell ConvertTo-Json."""
+        try:
+            import json
+            import subprocess
+            ps = (
+                "Get-Process "
+                "| Where-Object { $_.MainWindowTitle -ne '' } "
+                "| Select-Object Id,ProcessName,MainWindowTitle "
+                "| ConvertTo-Json -Compress"
+            )
+            r = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0 or not r.stdout.strip():
+                return []
+            data = json.loads(r.stdout)
+            if isinstance(data, dict):
+                data = [data]
+            results: List[WindowInfo] = []
+            for i, item in enumerate(data or []):
+                pid   = int(item.get("Id", 0))
+                name  = str(item.get("ProcessName", "unknown"))
+                title = str(item.get("MainWindowTitle", ""))
+                if not title:
+                    continue
+                results.append(WindowInfo(
+                    handle=pid, title=title, process_name=name, pid=pid,
+                    bounds=Bounds(0, 0, 1920, 1080), is_focused=(i == 0),
+                    window_uid=f"wsl:{pid}",
+                ))
+            return results
+        except Exception as e:
+            logger.debug("[WSLAdapter:_list_windows_ps] %s", e)
+            return []
+
+    # ── Screenshot ────────────────────────────────────────────────────────────
+
+    def get_screenshot(self, hwnd=None) -> Optional[bytes]:
+        if self._has_display:
+            result = LinuxAdapter.get_screenshot(self, hwnd)
+            if result:
+                return result
+        return self._screenshot_ps()
+
+    def _screenshot_ps(self) -> Optional[bytes]:
+        """Capture the primary screen via PowerShell, returning PNG bytes."""
+        try:
+            import base64
+            import subprocess
+            # Capture screen to a MemoryStream and emit as base64 — avoids
+            # WSL↔Windows path translation issues entirely.
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                "$b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds;"
+                "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+                "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+                "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
+                "$ms=New-Object System.IO.MemoryStream;"
+                "$bmp.Save($ms,[System.Drawing.Imaging.ImageFormat]::Png);"
+                "$g.Dispose();$bmp.Dispose();"
+                "[Convert]::ToBase64String($ms.ToArray())"
+            )
+            r = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=20,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                return base64.b64decode(r.stdout.strip())
+        except Exception as e:
+            logger.debug("[WSLAdapter:_screenshot_ps] %s", e)
+        return None
+
+    # ── get_windows_above_bounds: returns [] (inherited from LinuxAdapter) ────
+    # ── get_element_tree: upgraded by linux_adapter.install_into if pyatspi ──
+    # ── perform_action: inherited (pyautogui; needs DISPLAY) ─────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ScreenObserver  (public interface; delegates to platform adapter)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ScreenObserver:
+    """
+    Platform-aware screen observer.  All consumers should program against
+    this class rather than the platform adapters directly.
+    """
+
+    def __init__(self, config: dict):
+        self.config = config
+        self._adapter = self._select_adapter()
+        # Try to upgrade stub adapters to real AX implementations.
+        try:
+            if isinstance(self._adapter, MacOSAdapter):
+                import mac_adapter
+                if mac_adapter.install_into(self):
+                    logger.info("[ScreenObserver] mac_adapter installed (pyobjc)")
+            elif isinstance(self._adapter, LinuxAdapter):
+                import linux_adapter
+                if linux_adapter.install_into(self):
+                    logger.info("[ScreenObserver] linux_adapter installed (pyatspi)")
+        except Exception:
+            logger.exception("real adapter upgrade failed")
+
+    def _select_adapter(self):
+        if self.config.get("mock", False):
+            logger.info("[ScreenObserver] Using MockAdapter")
+            return MockAdapter()
+
+        target = self.config.get("platform", "auto")
+        # EFFECTIVE_PLATFORM is "WSL" when running inside WSL, otherwise same
+        # as platform.system().  Explicit config overrides auto-detection.
+        sys_plat = EFFECTIVE_PLATFORM if target == "auto" else target
+
+        adapters = {
+            "Windows": WindowsAdapter,
+            "Darwin":  MacOSAdapter,
+            "Linux":   LinuxAdapter,
+            "WSL":     WSLAdapter,
+        }
+
+        cls = adapters.get(sys_plat)
+        if cls is None:
+            logger.warning("[ScreenObserver] Unknown platform '%s'; using MockAdapter", sys_plat)
+            return MockAdapter()
+
+        try:
+            return cls(self.config)
+        except Exception as e:
+            print(f"[ScreenObserver:_select_adapter] Platform adapter failed: {e}; falling back to Mock")
+            traceback.print_exc()
+            return MockAdapter()
+
+    @property
+    def is_mock(self) -> bool:
+        return isinstance(self._adapter, MockAdapter)
+
+    def list_windows(self) -> List[WindowInfo]:
+        return self._adapter.list_windows()
+
+    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        return self._adapter.get_element_tree(hwnd)
+
+    def get_screenshot(self, hwnd=None) -> Optional[bytes]:
+        return self._adapter.get_screenshot(hwnd)
+
+    def get_full_display_screenshot(self) -> Optional[bytes]:
+        """Capture the entire virtual desktop (all monitors combined) as a PNG."""
+        try:
+            import mss
+            from PIL import Image
+            with mss.mss() as sct:
+                raw = sct.grab(sct.monitors[0])   # 0 = union of all monitors
+                img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+                buf = io.BytesIO()
+                img.save(buf, "PNG")
+                return buf.getvalue()
+        except Exception as e:
+            logger.warning(f"[ScreenObserver:get_full_display_screenshot] {e}; falling back")
+            return self._adapter.get_screenshot()
+
+    def perform_action(self, action: str, element_id: str = None,
+                       value: Any = None, hwnd=None) -> Dict:
+        return self._adapter.perform_action(action, element_id, value, hwnd)
+
+    def window_by_index(self, windows: List[WindowInfo],
+                        index: Optional[int]) -> Optional[WindowInfo]:
+        """Convenience: return a WindowInfo by list index, or None."""
+        if index is None or not windows:
+            return None
+        if 0 <= index < len(windows):
+            return windows[index]
+        return None
+
+    def window_by_uid(self, windows: List[WindowInfo],
+                      uid: Optional[str]) -> Optional[WindowInfo]:
+        """Resolve a window by stable uid; returns None if not found."""
+        if not uid or not windows:
+            return None
+        for w in windows:
+            if w.window_uid == uid:
+                return w
+        return None
+
+    def resolve_window(self, windows: List[WindowInfo],
+                       window_uid: Optional[str],
+                       window_index: Optional[int],
+                       window_title: Optional[str] = None) -> "WindowResolution":
+        """Resolve a window by uid (preferred), index, or title substring."""
+        if window_uid:
+            info = self.window_by_uid(windows, window_uid)
+            warning = ("both window_index and window_uid given; window_uid used"
+                       if window_index is not None else None)
+            return WindowResolution(info=info, warning=warning,
+                                    used_uid=True, requested_uid=window_uid)
+        if window_index is not None:
+            info = self.window_by_index(windows, window_index)
+            resolved_uid = info.window_uid if info else None
+            return WindowResolution(info=info, warning=None,
+                                    used_uid=bool(resolved_uid),
+                                    requested_uid=resolved_uid)
+        if window_title:
+            needle = window_title.lower()
+            info = next((w for w in windows if needle in (w.title or "").lower()), None)
+            resolved_uid = info.window_uid if info else None
+            return WindowResolution(info=info, warning=None,
+                                    used_uid=bool(resolved_uid),
+                                    requested_uid=resolved_uid)
+        return WindowResolution(info=None, warning=None,
+                                used_uid=False, requested_uid=None)
+
+    # ── Monitors / DPI (design doc §6.3) ──────────────────────────────────────
+
+    def get_monitors(self) -> List[Dict[str, Any]]:
+        """Return per-monitor metadata via mss."""
+        try:
+            import mss
+            with mss.mss() as sct:
+                mons = sct.monitors  # [0] is union; [1..] are individual
+                out: List[Dict[str, Any]] = []
+                for i, m in enumerate(mons[1:]):
+                    out.append({
+                        "index": i,
+                        "primary": (i == 0),
+                        "bounds":  {"x": m["left"], "y": m["top"],
+                                    "width": m["width"], "height": m["height"]},
+                        "scale_factor": 1.0,
+                        "logical_bounds":  {"x": m["left"], "y": m["top"],
+                                            "width": m["width"], "height": m["height"]},
+                        "physical_bounds": {"x": m["left"], "y": m["top"],
+                                            "width": m["width"], "height": m["height"]},
+                    })
+                return out
+        except Exception:
+            return []
+
+    # ── Capability discovery (design doc §6.4) ────────────────────────────────
+
+    def get_capabilities(self) -> Dict[str, Any]:
+        adapter_name = type(self._adapter).__name__
+        is_windows = adapter_name == "WindowsAdapter"
+        is_macos   = adapter_name == "MacOSAdapter"
+        is_wsl     = adapter_name == "WSLAdapter"
+        is_linux   = adapter_name in ("LinuxAdapter", "WSLAdapter")
+        is_mock    = adapter_name == "MockAdapter"
+
+        # Probe optional libs.
+        def _has(mod: str) -> bool:
+            try:
+                __import__(mod)
+                return True
+            except Exception:
+                return False
+
+        if is_macos:
+            ax_tree = _has("AppKit") or _has("ApplicationServices") or _has("Cocoa")
+        elif is_linux:
+            ax_tree = _has("pyatspi")
+        else:
+            ax_tree = is_windows or is_mock
+
+        return {
+            "ok": True,
+            "platform": EFFECTIVE_PLATFORM,
+            "adapter": adapter_name,
+            "version": (self.config.get("mcp", {}) or {}).get("version", "0.2.0"),
+            "protocol_version": 2,
+            "supports": {
+                "accessibility_tree":  bool(ax_tree),
+                "uia_invoke":          is_windows,
+                "occlusion_detection": is_windows or is_mock or _has("Quartz") or _has("Xlib"),
+                "drag":                True,
+                "ocr":                 _has("pytesseract"),
+                "vlm":                 bool((self.config.get("vlm") or {}).get("enabled")
+                                            and (self.config.get("vlm") or {}).get("model")),
+                "redaction":           True,
+                "scenarios":           is_mock,
+                "tracing":             True,
+                "replay":              True,
+                "image_blur":          _has("PIL"),
+                "wsl_powershell":      is_wsl,
+                # Action capabilities always present via REST + MCP.
+                "bring_to_foreground": True,
+                "element_targeting":   bool(ax_tree),  # click/focus/invoke/set_value via element_id
+                "observe_with_diff":   True,            # /api/observe returns diff token
+            },
+            "config": {
+                "tree_max_depth": (self.config.get("tree", {}) or {}).get("max_depth", 8),
+                "ascii_grid": {
+                    "width":  (self.config.get("ascii_sketch", {}) or {}).get("grid_width",  110),
+                    "height": (self.config.get("ascii_sketch", {}) or {}).get("grid_height",  38),
+                },
+            },
+        }
+
+    # ── Element occlusion (design doc D14) ────────────────────────────────────
+
+    def is_element_occluded(self, element_bounds: Bounds, target_hwnd: Any,
+                            all_windows: List[WindowInfo]) -> bool:
+        """
+        True iff every pixel of *element_bounds* is covered by another window
+        above the target in Z-order, or the element lies entirely off-screen.
+
+        On platforms without Z-order info, returns False (assumed visible).
+        """
+        screen = self.get_screen_bounds()
+        clipped = _intersect_bounds(element_bounds, screen)
+        if not clipped:
+            return True
+        regions = [clipped]
+        try:
+            occluders = self._adapter.get_windows_above_bounds(target_hwnd)
+        except Exception:
+            occluders = []
+        for occ in occluders:
+            regions = _subtract_rect(regions, occ)
+        return not regions
+
+    # ── Visibility helpers ────────────────────────────────────────────────────
+
+    def get_screen_bounds(self) -> Bounds:
+        """Return the bounding rect of the combined virtual screen (all monitors)."""
+        try:
+            import mss
+            with mss.mss() as sct:
+                m = sct.monitors[0]   # index 0 = union of all monitors
+                return Bounds(m["left"], m["top"], m["width"], m["height"])
+        except Exception:
+            return Bounds(0, 0, 65535, 65535)
+
+    def get_visible_areas(self, target_hwnd: Any,
+                          all_windows: List[WindowInfo]) -> List[Dict]:
+        """
+        Return a list of {x, y, width, height} dicts for the portions of the
+        window identified by *target_hwnd* that are on-screen and not covered
+        by windows above it in Z-order.
+
+        On Windows the Z-order is queried precisely via win32gui.
+        On macOS/Linux Z-order is unavailable, so the full clipped-to-screen
+        bounds are returned (assuming the window is on top).
+        """
+        target = next((w for w in all_windows if w.handle == target_hwnd), None)
+        if target is None:
+            return []
+
+        screen   = self.get_screen_bounds()
+        clipped  = _intersect_bounds(target.bounds, screen)
+        if not clipped:
+            return []
+
+        visible: List[Bounds] = [clipped]
+        occluders = self._adapter.get_windows_above_bounds(target_hwnd)
+        for occ in occluders:
+            visible = _subtract_rect(visible, occ)
+
+        return [b.to_dict() for b in visible]
+
+    def bring_to_foreground(self, target_hwnd: Any,
+                            all_windows: List[WindowInfo]) -> Dict:
+        """
+        Bring a window to the foreground.
+
+        Strategy (in order)
+        -------------------
+        1. Platform API — SetForegroundWindow / NSRunningApplication.activate /
+           wmctrl.  Does not click, so it cannot accidentally maximise the window
+           and works even when the window is fully occluded.
+        2. Click on title bar — fallback when the API call is unavailable or
+           blocked (e.g. Windows foreground-lock policy).  Requires at least one
+           visible pixel; returns an error only when this is also impossible.
+        """
+        target = next((w for w in all_windows if w.handle == target_hwnd), None)
+        if target is None:
+            return {"success": False, "error": "Window not found"}
+
+        # ── 1. Try platform API first ─────────────────────────────────────────
+        api_ok, api_note = self._activate_via_api(target_hwnd, target)
+        if api_ok:
+            return {"success": True, "action": "activate_api",
+                    "window": target.title, "note": api_note}
+
+        # ── 2. Fall back to clicking the title bar ────────────────────────────
+        regions = self.get_visible_areas(target_hwnd, all_windows)
+        if not regions:
+            return {
+                "success": False,
+                "error": (
+                    "Window has no visible area (fully occluded or off-screen) "
+                    f"and platform API also failed: {api_note}"
+                ),
+            }
+
+        best = min(regions, key=lambda r: (r["y"], -r["width"]))
+        click_x, click_y = self._title_bar_click_point(target_hwnd, target, best)
+        result = self.perform_action("click_at",
+                                     value={"x": click_x, "y": click_y,
+                                            "button": "left", "double": False})
+        result["clicked_x"] = click_x
+        result["clicked_y"] = click_y
+        result.setdefault("action", "click_title_bar")
+        result["api_note"] = api_note
+        return result
+
+    def _activate_via_api(self, hwnd: Any,
+                          info: "WindowInfo") -> tuple:
+        """
+        Attempt to raise *hwnd* using the platform's native window-focus API.
+
+        Returns (success: bool, note: str).  Never raises — all errors are
+        caught and returned as (False, reason).
+        """
+        if PLATFORM == "Windows":
+            return self._activate_windows(hwnd)
+        if PLATFORM == "Darwin":
+            return self._activate_macos(info)
+        if PLATFORM == "Linux":
+            # WSL: try X11 tools (wmctrl/xdotool) when DISPLAY is set; they
+            # will gracefully fail and return (False, reason) when absent.
+            return self._activate_linux(hwnd)
+        return False, f"Platform {PLATFORM!r} has no API activate implementation"
+
+    def _activate_windows(self, hwnd: int) -> tuple:
+        try:
+            import ctypes
+            import ctypes.wintypes
+            user32   = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+
+            # Restore if minimised (IsIconic) or hidden.
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+
+            def _is_foreground() -> bool:
+                return user32.GetForegroundWindow() == hwnd
+
+            if _is_foreground():
+                return True, "already foreground"
+
+            # ── Attempt 1: AttachThreadInput trick ────────────────────────────
+            fg_hwnd  = user32.GetForegroundWindow()
+            fg_tid   = user32.GetWindowThreadProcessId(fg_hwnd, None)
+            this_tid = kernel32.GetCurrentThreadId()
+            attached = False
+            if fg_tid and fg_tid != this_tid:
+                attached = bool(user32.AttachThreadInput(this_tid, fg_tid, True))
+            try:
+                user32.SetForegroundWindow(hwnd)
+            finally:
+                if attached:
+                    user32.AttachThreadInput(this_tid, fg_tid, False)
+
+            if _is_foreground():
+                return True, "SetForegroundWindow (AttachThreadInput)"
+
+            # ── Attempt 2: synthesise a keypress to acquire foreground lock ───
+            # Windows grants foreground rights to processes that just received
+            # user input.  A zero-vkey keybd_event satisfies that requirement.
+            KEYEVENTF_KEYUP = 0x0002
+            user32.keybd_event(0, 0, 0, 0)
+            user32.keybd_event(0, 0, KEYEVENTF_KEYUP, 0)
+            user32.SetForegroundWindow(hwnd)
+
+            if _is_foreground():
+                return True, "SetForegroundWindow (keybd_event unlock)"
+
+            # ── Attempt 3: BringWindowToTop + SetForegroundWindow ─────────────
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+
+            if _is_foreground():
+                return True, "BringWindowToTop + SetForegroundWindow"
+
+            return False, "SetForegroundWindow failed after all attempts"
+        except Exception as e:
+            return False, f"Windows API error: {e}"
+
+    def _activate_macos(self, info: "WindowInfo") -> tuple:
+        try:
+            import AppKit
+            ws   = AppKit.NSWorkspace.sharedWorkspace()
+            apps = ws.runningApplications()
+            pid  = info.pid
+            for app in apps:
+                if int(app.processIdentifier()) == pid:
+                    NSApplicationActivateIgnoringOtherApps = 1 << 1
+                    app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+                    return True, f"NSRunningApplication.activate pid={pid}"
+            return False, f"No running application found for pid={pid}"
+        except Exception as e:
+            return False, f"macOS API error: {e}"
+
+    def _activate_linux(self, hwnd: int) -> tuple:
+        import subprocess
+        # Try wmctrl first (X11; commonly available).
+        try:
+            r = subprocess.run(
+                ["wmctrl", "-ia", hex(hwnd)],
+                capture_output=True, timeout=3,
+            )
+            if r.returncode == 0:
+                return True, f"wmctrl -ia {hex(hwnd)} succeeded"
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            return False, f"wmctrl error: {e}"
+        # Try xdotool as a second option.
+        try:
+            r = subprocess.run(
+                ["xdotool", "windowactivate", "--sync", str(hwnd)],
+                capture_output=True, timeout=3,
+            )
+            if r.returncode == 0:
+                return True, f"xdotool windowactivate {hwnd} succeeded"
+            return False, f"xdotool returned {r.returncode}: {r.stderr.decode().strip()}"
+        except FileNotFoundError:
+            return False, "neither wmctrl nor xdotool found"
+        except Exception as e:
+            return False, f"xdotool error: {e}"
+
+    # ── Title-bar targeting (used by bring_to_foreground) ────────────────────
+
+    # Reserve these pixel margins for native window-control widgets.
+    _LEFT_CONTROL_MARGIN  = 90    # macOS traffic-lights
+    _RIGHT_CONTROL_MARGIN = 160   # Windows / Linux minimize/maximize/close
+    _MIN_SAFE_WIDTH       = 260   # below this, fall back to centre
+
+    _TITLEBAR_ROLES = {"TitleBar", "AXTitleBar", "title bar", "Title bar",
+                       "AXWindow"}
+
+    def _title_bar_click_point(self, target_hwnd: Any,
+                                window: Optional["WindowInfo"],
+                                region: Dict) -> tuple:
+        """Return (x, y) for a safe click inside the title bar of *region*."""
+        # 1. Try the accessibility tree.
+        try:
+            tree = self.get_element_tree(target_hwnd)
+        except Exception:
+            tree = None
+        bar = self._find_title_bar(tree, window.title if window else "") if tree else None
+        if bar is not None and bar.bounds and bar.bounds.width > 0:
+            tb = bar.bounds
+            # Intersect with the visible region so we don't click off-screen.
+            x1 = max(region["x"], tb.x)
+            y1 = max(region["y"], tb.y)
+            x2 = min(region["x"] + region["width"],  tb.right)
+            y2 = min(region["y"] + region["height"], tb.bottom)
+            if x2 > x1 and y2 > y1:
+                # Click 1/4 from the left of the title bar's visible width,
+                # but skip the leftmost control margin.
+                safe_left  = x1 + min(self._LEFT_CONTROL_MARGIN,  (x2 - x1) // 4)
+                safe_right = x2 - min(self._RIGHT_CONTROL_MARGIN, (x2 - x1) // 4)
+                if safe_right <= safe_left:
+                    cx = (x1 + x2) // 2
+                else:
+                    quarter = x1 + (x2 - x1) // 4
+                    cx = max(safe_left, min(safe_right, quarter))
+                cy = y1 + max(1, (y2 - y1) // 2)
+                return cx, cy
+
+        # 2. Fall back to the visible region's top strip.
+        rx = region["x"]
+        rw = region["width"]
+        ry = region["y"]
+        rh = region["height"]
+        if rw < self._MIN_SAFE_WIDTH:
+            cx = rx + rw // 2
+        else:
+            safe_left  = rx + self._LEFT_CONTROL_MARGIN
+            safe_right = rx + rw - self._RIGHT_CONTROL_MARGIN
+            candidate  = rx + rw // 4
+            if safe_right <= safe_left:
+                cx = rx + rw // 2
+            else:
+                cx = max(safe_left, min(safe_right, candidate))
+        title_bar_offset = min(12, max(1, (rh - 1) // 2))
+        cy = ry + title_bar_offset
+        # Clamp inside the region.
+        cx = max(rx, min(rx + rw - 1, cx))
+        cy = max(ry, min(ry + rh - 1, cy))
+        return cx, cy
+
+    def _find_title_bar(self, root: Optional["UIElement"],
+                         window_title: str) -> Optional["UIElement"]:
+        """Locate a title-bar-like element by role or by matching name.
+
+        Returns None for the root window itself (clicking the whole window's
+        center is precisely what we are trying to avoid).
+        """
+        if root is None:
+            return None
+        from collections import deque
+        queue = deque([(root, 0)])
+        while queue:
+            elem, depth = queue.popleft()
+            # Never return the root — its centre is the window body, not the
+            # title bar.
+            if depth > 0:
+                if (elem.role or "") in self._TITLEBAR_ROLES:
+                    return elem
+                if window_title and (elem.name or "").strip() == window_title.strip():
+                    # Must be near the top edge AND short — a real title bar.
+                    if (elem.bounds and root.bounds
+                            and (elem.bounds.y - root.bounds.y) < 40
+                            and elem.bounds.height <= 48):
+                        return elem
+            if depth > 3:
+                continue
+            for c in elem.children:
+                queue.append((c, depth + 1))
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rectangle geometry helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _intersect_bounds(a: Bounds, b: Bounds) -> Optional[Bounds]:
+    x1 = max(a.x, b.x)
+    y1 = max(a.y, b.y)
+    x2 = min(a.right, b.right)
+    y2 = min(a.bottom, b.bottom)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return Bounds(x1, y1, x2 - x1, y2 - y1)
+
+
+def _subtract_rect(rects: List[Bounds], occluder: Bounds) -> List[Bounds]:
+    """Subtract occluder from each rect, splitting into up to 4 sub-rects."""
+    result: List[Bounds] = []
+    for r in rects:
+        ix1 = max(r.x, occluder.x)
+        iy1 = max(r.y, occluder.y)
+        ix2 = min(r.right, occluder.right)
+        iy2 = min(r.bottom, occluder.bottom)
+
+        if ix2 <= ix1 or iy2 <= iy1:
+            result.append(r)
+            continue
+
+        # Top strip
+        if iy1 > r.y:
+            result.append(Bounds(r.x, r.y, r.width, iy1 - r.y))
+        # Bottom strip
+        if iy2 < r.bottom:
+            result.append(Bounds(r.x, iy2, r.width, r.bottom - iy2))
+        # Left strip (height = intersection height)
+        if ix1 > r.x:
+            result.append(Bounds(r.x, iy1, ix1 - r.x, iy2 - iy1))
+        # Right strip (height = intersection height)
+        if ix2 < r.right:
+            result.append(Bounds(ix2, iy1, r.right - ix2, iy2 - iy1))
+    return result
