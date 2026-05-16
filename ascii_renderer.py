@@ -68,9 +68,16 @@ import logging
 import textwrap
 import traceback
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from observer import Bounds, UIElement
+
+if TYPE_CHECKING:
+    # PIL is an optional runtime dependency — every function that touches
+    # it imports lazily inside its body so the module remains importable
+    # without Pillow installed. The forward-ref annotations below are
+    # type-only and resolved by tools (mypy / ruff) via this guard.
+    from PIL import Image  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
