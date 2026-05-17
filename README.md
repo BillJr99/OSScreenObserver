@@ -158,7 +158,12 @@ pip install pyobjc          # enables full AX accessibility tree
 sudo apt install wmctrl
 # If wmctrl is unavailable, the adapter falls back to python-xlib:
 #   pip install python-xlib
-pip install pyatspi         # enables full AT-SPI accessibility tree (optional)
+
+# AT-SPI accessibility tree (optional but recommended):
+# Install the system package first — the PyPI `pyatspi` wheel requires the
+# underlying GObject/AT-SPI libraries to be present.
+sudo apt install python3-pyatspi   # Debian/Ubuntu/WSL
+pip install pyatspi
 ```
 
 **WSL (Windows Subsystem for Linux)**
