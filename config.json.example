@@ -27,7 +27,7 @@
     "backend": "tesseract"
   },
 
-  "_vlm": "Vision-LLM modality reached through any OpenWebUI-compatible OpenAI chat-completions endpoint. Leave 'enabled' false unless you have a local endpoint configured. 'base_url' should NOT include a trailing path component — OSScreenObserver appends '/api/v1/...' itself. 'api_key' may be left null when the endpoint accepts $OWUI_API_KEY from the environment. Pick a 'model' interactively via `python main.py --mode inspect`, or set it here directly. 'prompt' is sent verbatim alongside the screenshot; tune it for your downstream agent.",
+  "_vlm": "Vision-LLM modality reached through any OpenAI-compatible chat-completions endpoint. Common values for 'base_url': 'http://localhost:3000' (OpenWebUI), 'http://localhost:11434' (Ollama direct — use a vision model such as llava or llama3.2-vision). OSScreenObserver probes /api/v1/... first (OpenWebUI convention) then falls back to /v1/... (Ollama/OpenAI convention) automatically. Leave 'enabled' false unless you have a local endpoint configured. 'base_url' should NOT include a trailing path component. 'api_key' may be left null when the endpoint accepts $OWUI_API_KEY from the environment. Pick a 'model' interactively via `python main.py --mode inspect`, or set it here directly. 'prompt' is sent verbatim alongside the screenshot; tune it for your downstream agent.",
   "vlm": {
     "enabled": false,
     "base_url": "http://localhost:3000",

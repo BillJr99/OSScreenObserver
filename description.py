@@ -320,24 +320,44 @@ class DescriptionGenerator:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        url = base_url.rstrip("/") + "/api/v1/chat/completions"
-        try:
-            req = urllib.request.Request(
-                url, data=json.dumps(payload).encode("utf-8"),
-                headers=headers, method="POST",
-            )
-            # urllib follows redirects by default and would silently convert
-            # a 302/303 POST into a GET, dropping the screenshot payload (and
-            # potentially forwarding it to an unintended host). Refuse any
-            # redirect so misconfigured vlm.base_url fails loudly instead.
-            opener = urllib.request.build_opener(_NoRedirectHandler)
-            with opener.open(req, timeout=240) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"]
-        except Exception as e:
-            print(f"[DescriptionGenerator:from_vlm] {e}")
-            traceback.print_exc()
-            return f"[VLM description failed: {e}]"
+        # Try /api/v1 (OpenWebUI) first, fall back to /v1 (Ollama / OpenAI).
+        _PREFIXES = ["/api/v1", "/v1"]
+        opener = urllib.request.build_opener(_NoRedirectHandler)
+        last_exc: Optional[Exception] = None
+        for prefix in _PREFIXES:
+            url = base_url.rstrip("/") + prefix + "/chat/completions"
+            try:
+                req = urllib.request.Request(
+                    url, data=json.dumps(payload).encode("utf-8"),
+                    headers=headers, method="POST",
+                )
+                # urllib follows redirects by default and would silently
+                # convert a 302/303 POST into a GET, dropping the screenshot
+                # payload (and potentially forwarding it to an unintended
+                # host). Refuse any redirect so misconfigured vlm.base_url
+                # fails loudly instead.
+                with opener.open(req, timeout=240) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                return data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as e:
+                # A 404 on the URL itself (not the model) suggests the prefix
+                # is wrong — try the next one. Any other HTTP error (401, 500
+                # …) is definitive; surface it immediately.
+                if e.code == 404:
+                    last_exc = e
+                    continue
+                print(f"[DescriptionGenerator:from_vlm] {e}")
+                traceback.print_exc()
+                return f"[VLM description failed: {e}]"
+            except Exception as e:
+                last_exc = e
+                # A connection-level failure (refused, timeout, DNS) most
+                # likely means the whole base_url is wrong; no point retrying
+                # with a different prefix.
+                break
+        print(f"[DescriptionGenerator:from_vlm] {last_exc}")
+        traceback.print_exc()
+        return f"[VLM description failed: {last_exc}]"
 
     # ── Combined ──────────────────────────────────────────────────────────────
 

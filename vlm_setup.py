@@ -1,23 +1,30 @@
 """
-vlm_setup.py — Interactive VLM model picker and OpenWebUI client helpers.
+vlm_setup.py — Interactive VLM model picker and OpenWebUI/Ollama client helpers.
 
-The VLM modality (Claude Vision, GPT-4V, etc.) is reached through an
-OpenWebUI-compatible OpenAI chat-completions endpoint. This module:
+The VLM modality (Claude Vision, GPT-4V, llava, etc.) is reached through an
+OpenAI-compatible chat-completions endpoint. Two path prefixes are tried
+automatically in order:
 
-  * Fetches the list of models from `{base_url}/api/v1/models`.
+  1. ``/api/v1`` — OpenWebUI's path convention (default).
+  2. ``/v1``     — Ollama's native OpenAI-compat path and the standard
+                   OpenAI / LiteLLM convention.
+
+This module:
+
+  * Fetches the list of models from ``{base_url}/<prefix>/models``.
   * Presents a paginated numbered picker on the controlling terminal.
-  * Persists the chosen model back to `config.json` so subsequent
+  * Persists the chosen model back to ``config.json`` so subsequent
     launches start non-interactively.
 
 The picker is only invoked when:
-  * `vlm.enabled` is true in config, AND
-  * `vlm.model` is unset/empty, AND
-  * the run mode does not own stdin (i.e. not `mcp` / `both`), AND
+  * ``vlm.enabled`` is true in config, AND
+  * ``vlm.model`` is unset/empty, AND
+  * the run mode does not own stdin (i.e. not ``mcp`` / ``both``), AND
   * stdin is a TTY.
 
 Otherwise VLM is automatically disabled for the run with a clear log
 message; the operator can either edit config.json directly or launch
-once with `--mode inspect` to walk through setup.
+once with ``--mode inspect`` to walk through setup.
 """
 
 import json
@@ -27,7 +34,8 @@ import tempfile
 import urllib.request
 from typing import List, Optional, Tuple
 
-_OWU_PREFIX = "/api/v1"
+# Tried in order; first one that returns a valid model list wins.
+_API_PREFIXES = ["/api/v1", "/v1"]
 _PAGE_SIZE = 20
 
 
@@ -37,13 +45,12 @@ def _resolve_api_key(cfg_key: Optional[str]) -> str:
     return os.environ.get("OWUI_API_KEY", "")
 
 
-def fetch_models(base_url: str, api_key: str,
-                 timeout: float = 10.0) -> Tuple[List[str], Optional[str]]:
-    """Return (model_ids, error_message). On success error_message is None."""
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+def _try_fetch_models(base_url: str, prefix: str, headers: dict,
+                      timeout: float) -> Tuple[List[str], Optional[str]]:
+    """Single attempt against one prefix. Returns (model_ids, error)."""
     try:
         req = urllib.request.Request(
-            base_url.rstrip("/") + f"{_OWU_PREFIX}/models",
+            base_url.rstrip("/") + prefix + "/models",
             headers=headers,
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -51,6 +58,23 @@ def fetch_models(base_url: str, api_key: str,
         return [m["id"] for m in data.get("data", []) if "id" in m], None
     except Exception as e:
         return [], str(e)
+
+
+def fetch_models(base_url: str, api_key: str,
+                 timeout: float = 10.0) -> Tuple[List[str], Optional[str]]:
+    """Return (model_ids, error_message). On success error_message is None.
+
+    Tries ``/api/v1/models`` first (OpenWebUI convention), then falls back
+    to ``/v1/models`` (Ollama / OpenAI / LiteLLM convention).
+    """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    last_err: Optional[str] = None
+    for prefix in _API_PREFIXES:
+        models, err = _try_fetch_models(base_url, prefix, headers, timeout)
+        if models:
+            return models, None
+        last_err = err
+    return [], last_err
 
 
 def pick_model_paginated(models: List[str]) -> Optional[str]:

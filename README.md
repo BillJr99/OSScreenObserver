@@ -205,28 +205,48 @@ logs a `[main:load_config]` error and reports `config_error` at `GET /api/health
 
 **VLM (optional, all platforms)**
 
-The VLM modality is reached through an OpenWebUI-compatible OpenAI
-chat-completions endpoint, which can front any vision-capable model
-(Claude via OpenWebUI's Anthropic integration, GPT-4o, etc.). No
-provider SDK is required.
+The VLM modality is reached through any OpenAI-compatible
+chat-completions endpoint. Two common setups:
+
+| Setup | `base_url` | notes |
+|-------|-----------|-------|
+| **OpenWebUI** | `http://localhost:3000` | fronts Ollama, Anthropic, OpenAI, etc. |
+| **Ollama direct** | `http://localhost:11434` | use a vision model such as `llava` or `llama3.2-vision` |
+| **OpenAI / LiteLLM / other** | your endpoint URL | standard `/v1` path |
+
+OSScreenObserver automatically probes `/api/v1/models` first (OpenWebUI
+convention) and falls back to `/v1/models` (Ollama / OpenAI convention),
+so pointing `base_url` straight at Ollama works without any extra
+configuration.
 
 ```jsonc
-// config.json
+// config.json — OpenWebUI example
 "vlm": {
   "enabled":  true,
-  "base_url": "http://localhost:3000",   // your OpenWebUI URL
+  "base_url": "http://localhost:3000",   // OpenWebUI URL
   "api_key":  null,                       // or set $OWUI_API_KEY
   "model":    null,                       // null → pick interactively on first launch
   "max_tokens": 1500
 }
 ```
 
+```jsonc
+// config.json — Ollama direct example
+"vlm": {
+  "enabled":  true,
+  "base_url": "http://localhost:11434",  // Ollama's native API port
+  "api_key":  null,
+  "model":    "llava:latest",            // any vision-capable model pulled in Ollama
+  "max_tokens": 1500
+}
+```
+
 The first time you run `python main.py --mode inspect` with
 `vlm.enabled=true` and `vlm.model=null`, OSScreenObserver fetches the
-model list from `{base_url}/api/v1/models`, shows a paginated picker,
-and saves your choice back to `config.json`. In `mcp`/`both` mode the
-picker is suppressed (stdin is owned by the MCP framing channel); set
-`vlm.model` directly in `config.json` for non-interactive use.
+model list from the endpoint, shows a paginated picker, and saves your
+choice back to `config.json`. In `mcp`/`both` mode the picker is
+suppressed (stdin is owned by the MCP framing channel); set `vlm.model`
+directly in `config.json` for non-interactive use.
 
 ---
 
