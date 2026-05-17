@@ -72,3 +72,20 @@ def test_save_model_creates_vlm_section_if_missing(tmp_path):
         on_disk = json.load(f)
     assert on_disk["vlm"] == {"model": "some/model"}
     assert on_disk["web_ui"]["host"] == "127.0.0.1"
+
+
+def test_save_model_writes_alternate_slot(tmp_path):
+    """The optional ``key=`` parameter persists multipass auxiliary models
+    (model_fast, model_actions, model_verify) without clobbering the
+    primary ``model`` slot."""
+    cfg, path = _cfg(tmp_path, enabled=True, model="qwen2.5vl:7b")
+    vlm_setup.save_model_to_config(path, "qwen2.5vl:3b", key="model_fast")
+    vlm_setup.save_model_to_config(path, "llama3.2-vision:11b",
+                                   key="model_verify")
+    with open(path, encoding="utf-8") as f:
+        on_disk = json.load(f)
+    assert on_disk["vlm"]["model"]        == "qwen2.5vl:7b"
+    assert on_disk["vlm"]["model_fast"]   == "qwen2.5vl:3b"
+    assert on_disk["vlm"]["model_verify"] == "llama3.2-vision:11b"
+    # UTF-8 prompt round-trips alongside the new keys.
+    assert on_disk["vlm"]["prompt"] == "Describe — naïvely 😀"

@@ -211,7 +211,7 @@ chat-completions endpoint. Two common setups:
 | Setup | `base_url` | notes |
 |-------|-----------|-------|
 | **OpenWebUI** | `http://localhost:3000` | fronts Ollama, Anthropic, OpenAI, etc. |
-| **Ollama direct** | `http://localhost:11434` | use a vision model such as `llava` or `llama3.2-vision` |
+| **Ollama direct** | `http://localhost:11434` | use a vision model such as `qwen2.5vl:7b`, `llama3.2-vision`, or `minicpm-v` |
 | **OpenAI / LiteLLM / other** | your endpoint URL | standard `/v1` path |
 
 OSScreenObserver automatically probes `/api/v1/models` first (OpenWebUI
@@ -219,34 +219,66 @@ convention) and falls back to `/v1/models` (Ollama / OpenAI convention),
 so pointing `base_url` straight at Ollama works without any extra
 configuration.
 
+The VLM channel has two operating modes:
+
+* **`single`** — one screenshot + one prompt, optionally grounded with the
+  accessibility tree, OCR text, ASCII sketch, and focused-element hint as
+  `<X>...</X>` envelopes appended to the prompt. Cheap (one HTTP call) and
+  back-compatible with prior versions.
+* **`multipass`** — a three-pass pipeline (scene → controls → next-actions)
+  with an optional verify pass. Returns a structured JSON envelope with
+  `summary`, `app`, `screen_type`, `focused`, `controls`, `next_actions`,
+  `modal_open`, `sensitive_regions`, and per-pass timings. The envelope
+  travels in the legacy `description` field as pretty-printed JSON and is
+  also exposed parsed under the new `vlm_structured` field for callers that
+  prefer not to re-parse.
+
 ```jsonc
-// config.json — OpenWebUI example
+// config.json — Ollama direct, recommended starting configuration
 "vlm": {
   "enabled":  true,
-  "base_url": "http://localhost:3000",   // OpenWebUI URL
-  "api_key":  null,                       // or set $OWUI_API_KEY
-  "model":    null,                       // null → pick interactively on first launch
-  "max_tokens": 1500
+  "base_url": "http://localhost:11434",
+  "api_key":  null,
+
+  "model":         "qwen2.5vl:7b",       // primary (Pass 2 / single-shot)
+  "model_fast":    "qwen2.5vl:3b",       // Pass 1 + per-widget crop labels
+  "model_actions": null,                 // Pass 3 (no image); falls back to primary
+  "model_verify":  null,                 // optional second opinion
+
+  "mode":          "multipass",          // or "single" for legacy one-shot
+  "output_format": "json",
+  "max_tokens":    2000,
+  "temperature":   0.1,
+
+  "ground_with_tree":   true,            // inject <ACCESSIBILITY_TREE>
+  "ground_with_ocr":    true,            // inject <OCR_TEXT>
+  "ground_with_sketch": true,            // inject <ASCII_SKETCH> with tab badges
+  "ground_with_focus":  true             // inject <FOCUSED_ELEMENT>
 }
 ```
 
-```jsonc
-// config.json — Ollama direct example
-"vlm": {
-  "enabled":  true,
-  "base_url": "http://localhost:11434",  // Ollama's native API port
-  "api_key":  null,
-  "model":    "llama3.2-vision:11b",      // any vision-capable model pulled in Ollama
-  "max_tokens": 1500
-}
-```
+**Recommended Ollama models (24 GB RTX 4090, 128 GB RAM):**
+
+| Role | Model | Tag | ~VRAM | Notes |
+|---|---|---|---|---|
+| Primary, best overall | Qwen2.5-VL 7B | `qwen2.5vl:7b` | ~8 GB | SOTA small open VLM for UI/document tasks; strong at small fonts. |
+| Primary, premium | Qwen2.5-VL 32B (Q4_K_M) | `qwen2.5vl:32b` | ~20 GB | Top-tier reasoning; fits 24 GB at Q4; slower per image. |
+| Different family (verify) | Llama 3.2 Vision 11B | `llama3.2-vision:11b` | ~9 GB | Good `model_verify` pair for genuine second opinion. |
+| OCR-heavy screens | MiniCPM-V 2.6 | `minicpm-v:8b` | ~7 GB | Excellent on dense text and forms. |
+| Pass 1 / crop labels | Qwen2.5-VL 3B | `qwen2.5vl:3b` | ~4 GB | Cheap scene tagging; reused for the ASCII renderer's crop labeller. |
+| Pass 3 (text-only) | Qwen2.5 14B | `qwen2.5:14b` | ~9 GB | Pass 3 has no image; a text-only LLM is faster than a VLM. |
+
+Set `OLLAMA_KEEP_ALIVE=30m` and `OLLAMA_MAX_LOADED_MODELS=2` so the primary
+and fast models stay resident across multipass calls.
 
 The first time you run `python main.py --mode inspect` with
 `vlm.enabled=true` and `vlm.model=null`, OSScreenObserver fetches the
 model list from the endpoint, shows a paginated picker, and saves your
-choice back to `config.json`. In `mcp`/`both` mode the picker is
-suppressed (stdin is owned by the MCP framing channel); set `vlm.model`
-directly in `config.json` for non-interactive use.
+choice back to `config.json`. When `mode="multipass"`, the picker also
+prompts for the optional `model_fast`, `model_actions`, and `model_verify`
+slots (skip any of them to reuse the primary). In `mcp`/`both` mode the
+picker is suppressed (stdin is owned by the MCP framing channel); set the
+model keys directly in `config.json` for non-interactive use.
 
 ---
 

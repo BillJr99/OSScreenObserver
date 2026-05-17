@@ -189,6 +189,12 @@ details > summary::-webkit-details-marker { display: none; }
 }
 .desc-section { margin-bottom: 20px; }
 .desc-label { font-family: var(--mono); font-size: 9px; letter-spacing: 0.15em; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px; padding: 2px 8px; border-left: 2px solid var(--cyan); }
+.vlm-envelope { font-family: var(--mono); font-size: 11px; line-height: 1.5; }
+.vlm-row { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 12px; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.vlm-row:last-child { border-bottom: 0; }
+.vlm-k { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; font-size: 10px; padding-top: 2px; }
+.vlm-v { color: var(--text-hi); word-break: break-word; }
+.vlm-v pre { margin: 0; font-size: 10.5px; }
 
 /* ── Sketch panel ────────────────────────────────────────────────────────── */
 #sketch-panel pre {
@@ -631,6 +637,35 @@ async function loadStructure() {
   } catch(e) { panel.innerHTML = `<pre style="color:var(--red)">${esc(String(e))}</pre>`; setStatus('ERROR'); }
 }
 
+// Render the structured envelope returned by VLM multipass mode as an
+// HTML definition list. Nested objects/arrays fall back to pretty JSON
+// so nothing is lost; the common scalar fields render as one row each.
+function renderVlmEnvelope(env) {
+  const rows = [];
+  const order = [
+    'summary', 'app', 'screen_type', 'primary_task',
+    'focused', 'modal_open', 'controls', 'next_actions',
+    'sensitive_regions', 'confidence', 'discrepancies', '_passes',
+  ];
+  const seen = new Set();
+  function renderVal(v) {
+    if (v === null || v === undefined) return '<em>null</em>';
+    if (typeof v === 'string')  return esc(v);
+    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+    return `<pre>${esc(JSON.stringify(v, null, 2))}</pre>`;
+  }
+  for (const k of order) {
+    if (!(k in env)) continue;
+    seen.add(k);
+    rows.push(`<div class="vlm-row"><span class="vlm-k">${esc(k)}</span><span class="vlm-v">${renderVal(env[k])}</span></div>`);
+  }
+  for (const k of Object.keys(env)) {
+    if (seen.has(k)) continue;
+    rows.push(`<div class="vlm-row"><span class="vlm-k">${esc(k)}</span><span class="vlm-v">${renderVal(env[k])}</span></div>`);
+  }
+  return `<div class="vlm-envelope">${rows.join('')}</div>`;
+}
+
 // Parse "[label]\ntext" blocks from a combined description string.
 function parseDescSections(desc) {
   const sections = [];
@@ -691,7 +726,24 @@ async function loadDescription() {
     const sections = parseDescSections(data.description || '');
     let html = buildSourcesHdr(caps, sections);
     for (const [label, text] of sections) {
-      html += `<div class="desc-section"><div class="desc-label">${esc(label)}</div><pre>${esc(text)}</pre></div>`;
+      // VLM multipass returns a JSON envelope. Pretty-print it as a
+      // definition list so the structured fields are readable instead of
+      // arriving as a wall of braces. Plain-prose VLM and other sections
+      // stay in <pre>.
+      let body;
+      const trimmed = text.trim();
+      if (label.toLowerCase() === 'vlm'
+          && trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        try {
+          const env = JSON.parse(trimmed);
+          body = renderVlmEnvelope(env);
+        } catch (_) {
+          body = `<pre>${esc(text)}</pre>`;
+        }
+      } else {
+        body = `<pre>${esc(text)}</pre>`;
+      }
+      html += `<div class="desc-section"><div class="desc-label">${esc(label)}</div>${body}</div>`;
     }
     panel.innerHTML = html || '<pre>No description returned.</pre>';
     setStatus('READY');
