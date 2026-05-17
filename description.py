@@ -262,36 +262,29 @@ class DescriptionGenerator:
 
     # ── VLM (OpenWebUI-compatible chat completions) ──────────────────────────
 
-    def from_vlm(self, screenshot_bytes: bytes) -> str:
+    def from_vlm(self, screenshot_bytes: bytes) -> Optional[str]:
         """
         Generate a rich description via a vision-capable LLM exposed through
-        an OpenWebUI-compatible OpenAI chat-completions endpoint.
+        an OpenAI-compatible chat-completions endpoint (OpenWebUI or Ollama).
 
-        The screenshot is sent as a base64 `image_url` content part to
-        `{vlm.base_url}/api/v1/chat/completions` using `vlm.model`. The
-        endpoint can front any vision model OpenWebUI supports (e.g. Claude
-        via the Anthropic integration, GPT-4o, etc.) — OSScreenObserver
-        itself no longer depends on the Anthropic SDK or ANTHROPIC_API_KEY.
+        Returns the model's response string on success, or ``None`` if the
+        endpoint is unavailable or not configured — so callers can omit the
+        VLM section gracefully rather than surfacing an error to the user.
 
         Required config:
           vlm.enabled  = true
-          vlm.base_url = e.g. "http://localhost:3000"
-          vlm.model    = a model id available through the endpoint
+          vlm.base_url = e.g. "http://localhost:11434" (Ollama) or
+                              "http://localhost:3000"  (OpenWebUI)
+          vlm.model    = a vision-capable model id available at the endpoint
           vlm.api_key  = optional; falls back to $OWUI_API_KEY
         """
         if not self.vlm_cfg.get("enabled", False):
-            return (
-                "[VLM disabled — set vlm.enabled = true in config.json "
-                "and configure vlm.base_url / vlm.model]"
-            )
+            return None
 
         model = self.vlm_cfg.get("model")
         if not model:
-            return (
-                "[VLM model not configured — run `python main.py --mode "
-                "inspect` once to pick a model, or set vlm.model in "
-                "config.json]"
-            )
+            logger.debug("[from_vlm] vlm.model not configured — skipping VLM")
+            return None
 
         base_url   = self.vlm_cfg.get("base_url") or "http://localhost:3000"
         api_key    = (self.vlm_cfg.get("api_key")
@@ -340,24 +333,20 @@ class DescriptionGenerator:
                     data = json.loads(resp.read().decode("utf-8"))
                 return data["choices"][0]["message"]["content"]
             except urllib.error.HTTPError as e:
-                # A 404 on the URL itself (not the model) suggests the prefix
-                # is wrong — try the next one. Any other HTTP error (401, 500
-                # …) is definitive; surface it immediately.
+                # 404 on the URL path suggests wrong prefix — try the next.
+                # Any other HTTP error is definitive; fall through to warning.
                 if e.code == 404:
                     last_exc = e
                     continue
-                print(f"[DescriptionGenerator:from_vlm] {e}")
-                traceback.print_exc()
-                return f"[VLM description failed: {e}]"
+                last_exc = e
+                break
             except Exception as e:
                 last_exc = e
-                # A connection-level failure (refused, timeout, DNS) most
-                # likely means the whole base_url is wrong; no point retrying
-                # with a different prefix.
+                # Connection-level failure (refused, timeout, DNS) means the
+                # endpoint is simply not reachable; no point trying more.
                 break
-        print(f"[DescriptionGenerator:from_vlm] {last_exc}")
-        traceback.print_exc()
-        return f"[VLM description failed: {last_exc}]"
+        logger.warning("[from_vlm] VLM unavailable (%s) — skipping", last_exc)
+        return None
 
     # ── Combined ──────────────────────────────────────────────────────────────
 
@@ -375,5 +364,7 @@ class DescriptionGenerator:
             if self.ocr_cfg.get("enabled", True):
                 result["ocr"] = self.from_ocr(screenshot_bytes)
             if self.vlm_cfg.get("enabled", False):
-                result["vlm"] = self.from_vlm(screenshot_bytes)
+                vlm_out = self.from_vlm(screenshot_bytes)
+                if vlm_out is not None:
+                    result["vlm"] = vlm_out
         return result
