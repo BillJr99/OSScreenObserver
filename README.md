@@ -126,6 +126,31 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 
 ## Installation
 
+### Quick start — automated launchers
+
+The fastest path is the platform launcher, which detects missing
+dependencies (Python, Tesseract, Ollama, wmctrl on Linux), asks before
+installing each one, sets up a `.venv/`, installs `requirements.txt`, and
+starts the server:
+
+```bash
+# Linux
+./start.sh
+
+# macOS
+./start-mac.sh
+
+# Windows  (Command Prompt or PowerShell)
+start.bat
+```
+
+The scripts use `winget` on Windows, Homebrew on macOS, and the native
+package manager on Linux (apt / dnf / pacman / zypper). Skip any prompt
+to install manually later; the launcher will still bring up whatever is
+already working.
+
+For a manual install, follow the steps below.
+
 ### 1. Python environment
 
 ```bash
