@@ -3,8 +3,12 @@ main.py — Entry point for the OS Screen Observer.
 
 Usage
 ─────
-  # Both MCP server (stdio) + web inspector (port 5001) simultaneously
+  # Web inspector only (port 5001) — the default; stdin is free so VLM
+  # model setup and Ollama auto-pull can prompt interactively on first run.
   python main.py
+
+  # Both MCP server (stdio) + web inspector simultaneously
+  python main.py --mode both
 
   # Web inspector only (useful for manual exploration)
   python main.py --mode inspect
@@ -171,15 +175,16 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class = argparse.RawDescriptionHelpFormatter,
         epilog = """
 examples:
-  python main.py                          # both MCP + web UI
-  python main.py --mode inspect           # web UI only
-  python main.py --mode mcp              # MCP stdio only
+  python main.py                          # web UI only (default)
+  python main.py --mode both              # MCP stdio + web UI
+  python main.py --mode mcp               # MCP stdio only
   python main.py --mock                   # mock data (no OS access needed)
-  python main.py --mock --mode inspect --port 8080
+  python main.py --mock --port 8080
         """,
     )
-    p.add_argument("--mode",   choices=["mcp", "inspect", "both"], default="both",
-                   help="Run mode (default: both)")
+    p.add_argument("--mode",   choices=["mcp", "inspect", "both"], default="inspect",
+                   help="Run mode (default: inspect — interactive VLM setup "
+                        "runs only in this mode)")
     p.add_argument("--config", default="config.json",
                    help="Path to JSON config file (default: config.json)")
     p.add_argument("--mock",   action="store_true",

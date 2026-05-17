@@ -44,9 +44,10 @@ OSScreenObserver exposes a full REST API on port `5001` (configurable). Most `/a
 ### Startup modes
 
 ```bash
-python main.py --mode inspect          # HTTP server only (web UI + REST API)
+python main.py                         # Default: HTTP server only (web UI + REST API, interactive VLM setup)
 python main.py --mode both             # REST API + MCP stdio simultaneously
-python main.py --mock --mode inspect   # Mock mode with synthetic data (no OS access)
+python main.py --mode mcp              # MCP stdio only
+python main.py --mock                  # Mock mode with synthetic data (no OS access)
 python main.py --mock --scenario scenarios_examples/login.yaml  # Scenario-driven mock
 ```
 
