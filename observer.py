@@ -755,7 +755,7 @@ class WindowsAdapter:
                 from PIL import Image
                 import win32gui
 
-                with mss.mss() as sct:
+                with mss.MSS() as sct:
                     if hwnd:
                         rect = win32gui.GetWindowRect(hwnd)
                         region = {"left": rect[0], "top": rect[1],
@@ -839,7 +839,7 @@ class MacOSAdapter:
         try:
             import mss
             from PIL import Image
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 raw = sct.grab(sct.monitors[1])
                 img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                 buf = io.BytesIO()
@@ -968,7 +968,7 @@ class LinuxAdapter:
         try:
             import mss
             from PIL import Image
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 raw = sct.grab(sct.monitors[1])
                 img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                 buf = io.BytesIO()
@@ -1184,7 +1184,7 @@ class ScreenObserver:
         try:
             import mss
             from PIL import Image
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 raw = sct.grab(sct.monitors[0])   # 0 = union of all monitors
                 img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
                 buf = io.BytesIO()
@@ -1250,7 +1250,7 @@ class ScreenObserver:
         """Return per-monitor metadata via mss."""
         try:
             import mss
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 mons = sct.monitors  # [0] is union; [1..] are individual
                 out: List[Dict[str, Any]] = []
                 for i, m in enumerate(mons[1:]):
@@ -1357,7 +1357,7 @@ class ScreenObserver:
         """Return the bounding rect of the combined virtual screen (all monitors)."""
         try:
             import mss
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 m = sct.monitors[0]   # index 0 = union of all monitors
                 return Bounds(m["left"], m["top"], m["width"], m["height"])
         except Exception:
