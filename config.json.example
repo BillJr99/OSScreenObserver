@@ -27,14 +27,44 @@
     "backend": "tesseract"
   },
 
-  "_vlm": "Vision-LLM modality reached through any OpenAI-compatible chat-completions endpoint. Common values for 'base_url': 'http://localhost:3000' (OpenWebUI), 'http://localhost:11434' (Ollama direct — use a vision model such as llava or llama3.2-vision). OSScreenObserver probes /api/v1/... first (OpenWebUI convention) then falls back to /v1/... (Ollama/OpenAI convention) automatically. Leave 'enabled' false unless you have a local endpoint configured. 'base_url' should NOT include a trailing path component. 'api_key' may be left null when the endpoint accepts $OWUI_API_KEY from the environment. Pick a 'model' interactively via `python main.py --mode inspect`, or set it here directly. 'prompt' is sent verbatim alongside the screenshot; tune it for your downstream agent.",
+  "_vlm": "Vision-LLM modality reached through any OpenAI-compatible chat-completions endpoint. Common values for 'base_url': 'http://localhost:3000' (OpenWebUI), 'http://localhost:11434' (Ollama direct — use a vision model such as 'qwen2.5vl:7b' for best UI/screen quality, 'llama3.2-vision:11b' for a different family, or 'minicpm-v:8b' for OCR-heavy screens). OSScreenObserver probes /api/v1/... first (OpenWebUI convention) then falls back to /v1/... (Ollama/OpenAI convention) automatically. 'base_url' should NOT include a trailing path component. 'api_key' may be left null when the endpoint accepts $OWUI_API_KEY from the environment. Pick a 'model' interactively via `python main.py --mode inspect`, or set it here directly. Two operating modes — 'single' sends one screenshot + grounded prompt and returns the raw response; 'multipass' runs a three-pass scene→controls→actions pipeline (plus an optional verify pass) and returns a structured JSON envelope. The ground_with_* flags include the accessibility tree, OCR text, ASCII sketch, and focused-element hint as in-context ground truth alongside the screenshot, gated independently and silently omitted on failure.",
   "vlm": {
     "enabled": true,
     "base_url": "http://localhost:11434",
     "api_key": null,
-    "model": "llama3.2-vision:11b",
-    "max_tokens": 1500,
-    "prompt": "You are analyzing a computer screen for an agentic AI system. Describe what you see in structured detail: (1) What application(s) are visible? (2) What is the main content or task shown? (3) What UI controls are present and in what state? (4) What is the spatial layout? (5) What is the current focus or active element? (6) What actions would be most natural to take next? Be specific and use exact names of buttons, labels, and fields as they appear."
+
+    "model":         "qwen2.5vl:7b",
+    "model_fast":    "qwen2.5vl:3b",
+    "model_actions": null,
+    "model_verify":  null,
+
+    "max_tokens":  2000,
+    "temperature": 0.1,
+    "timeout_s":   60,
+
+    "mode":          "multipass",
+    "output_format": "json",
+
+    "ground_with_tree":   true,
+    "ground_with_ocr":    true,
+    "ground_with_sketch": true,
+    "ground_with_focus":  true,
+
+    "tree_max_lines":   80,
+    "ocr_max_chars":    4000,
+    "sketch_max_chars": 6000,
+    "image_max_dim":    1600,
+    "focused_zoom_pad": 96,
+
+    "_ollama_runner": "How to invoke the Ollama CLI. Leave null and set vlm.enabled=true, then run `python main.py --mode inspect` once — OSScreenObserver will ask you interactively and save the choice here. Common values: [] to skip auto-pull; ['ollama'] for a native install; ['docker', 'exec', 'my_container', 'ollama'] for a Docker-based Ollama. On startup, OSScreenObserver checks which configured models are present in the local Ollama library and pulls any that are missing, printing pull progress to stderr.",
+    "ollama_runner": null,
+
+    "_prompt_legacy": "The legacy 'prompt' key remains honoured as a synonym for 'prompt_single' when mode=='single'. When unset, the built-in defaults in description.py are used; tune them per app/agent.",
+    "prompt_single":   null,
+    "prompt_scene":    null,
+    "prompt_controls": null,
+    "prompt_actions":  null,
+    "prompt_verify":   null
   },
 
   "_ascii_sketch": "Text-sketch renderer (ascii_renderer.py). 'grid_width'/'grid_height' control the output cell dimensions; the renderer projects the window's screen-pixel bounds into that grid. 'unicode_box' uses ┌─┐│└┘ glyphs (set false for plain ASCII +-|). The fidelity toggles are all independently switchable: 'role_glyphs' enables compact [x]/(•)/▼ control representations; 'occlusion_prune' hides siblings fully covered by later-drawn siblings (modals); 'tab_index_badges' writes ①②③ into focusable elements in DFS focus order; 'landmark_headers' bakes role+name into the top border of toolbars / dialogs / status bars; 'vlm_fallback' (off by default) lets the renderer call the VLM endpoint above to label unidentified custom widgets — set true only when you have vlm.enabled=true and accept the network cost.",

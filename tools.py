@@ -1421,15 +1421,35 @@ def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
         except Exception as e:
             logger.exception("[get_screen_description] OCR failed: %s", e)
 
-    # VLM — attempted when enabled in config.
+    # VLM — attempted when enabled in config. In multipass mode the VLM
+    # output is a structured envelope; the JSON-serialised form is folded
+    # into the concatenated body (for back-compat with the legacy text
+    # description) and the parsed dict is returned separately under
+    # ``vlm_structured`` so callers don't have to re-parse it.
+    vlm_structured: Any = None
     vlm_enabled = (ctx.config.get("vlm", {}) or {}).get("enabled", False)
     if vlm_enabled:
         try:
             shot = ctx.observer.get_screenshot(info.handle)
             if shot:
-                vlm_out = ctx.describer.from_vlm(shot)
-                if vlm_out is not None:
-                    parts["vlm"] = vlm_out
+                vlm_mode = (
+                    (ctx.config.get("vlm", {}) or {}).get("mode") or "single"
+                ).lower()
+                if vlm_mode == "multipass":
+                    env = ctx.describer.from_vlm_multipass(
+                        shot, root=sub, window=info,
+                    )
+                    if env is not None:
+                        import json as _json
+                        parts["vlm"] = _json.dumps(env, indent=2,
+                                                   ensure_ascii=False)
+                        vlm_structured = env
+                else:
+                    vlm_out = ctx.describer.from_vlm(
+                        shot, root=sub, window=info,
+                    )
+                    if vlm_out is not None:
+                        parts["vlm"] = vlm_out
             else:
                 logger.warning("[get_screen_description] screenshot unavailable for VLM")
         except Exception as e:
@@ -1448,7 +1468,7 @@ def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
             body = body[:char_cap] + "… [truncated]"
             truncated = True
 
-    return {
+    result: Dict[str, Any] = {
         "ok": True, "success": True,
         "step_id": step_id, "caused_by_step_id": caused_by,
         "window": info.title, "window_uid": info.window_uid,
@@ -1456,6 +1476,9 @@ def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
         "description": body,
         "truncated": truncated,
     }
+    if vlm_structured is not None:
+        result["vlm_structured"] = vlm_structured
+    return result
 
 
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
