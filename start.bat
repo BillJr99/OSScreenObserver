@@ -112,10 +112,14 @@ if !ANSWER!==Y (
     %PY_CMD% -m pip install -r requirements.txt
 )
 
+REM ─── Bootstrap config.json + fix tesseract path ────────────────────────────
+
+%PY_CMD% setup_config.py
+
 REM ─── Launch ─────────────────────────────────────────────────────────────────
 
 echo.
-echo   Starting OSScreenObserver (default mode: inspect)...
+echo   Starting OSScreenObserver (auto mode: TTY -^> inspect, pipe -^> both)...
 echo   Web UI -^> http://127.0.0.1:5001
 echo.
 %PY_CMD% main.py %*

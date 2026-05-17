@@ -138,10 +138,14 @@ if confirm "Install/upgrade Python dependencies from requirements.txt?"; then
     python3 -m pip install -r requirements.txt
 fi
 
+# ─── Bootstrap config.json + fix tesseract path ──────────────────────────────
+
+python3 setup_config.py || true
+
 # ─── Launch ──────────────────────────────────────────────────────────────────
 
 echo ""
-echo "  Starting OSScreenObserver (default mode: inspect)…"
+echo "  Starting OSScreenObserver (auto mode: TTY → inspect, pipe → both)…"
 echo "  Web UI → http://127.0.0.1:5001"
 echo ""
 exec python3 main.py "$@"
