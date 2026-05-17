@@ -1427,7 +1427,9 @@ def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
         try:
             shot = ctx.observer.get_screenshot(info.handle)
             if shot:
-                parts["vlm"] = ctx.describer.from_vlm(shot)
+                vlm_out = ctx.describer.from_vlm(shot)
+                if vlm_out is not None:
+                    parts["vlm"] = vlm_out
             else:
                 logger.warning("[get_screen_description] screenshot unavailable for VLM")
         except Exception as e:

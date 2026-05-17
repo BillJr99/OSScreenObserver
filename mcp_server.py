@@ -1057,7 +1057,10 @@ class MCPServer:
         elif mode == "vlm":
             if shot is None:
                 return {"error": "Screenshot unavailable for VLM"}
-            return {"mode": mode, "description": self.describer.from_vlm(shot)}
+            vlm_out = self.describer.from_vlm(shot)
+            if vlm_out is None:
+                return {"mode": mode, "description": "[VLM unavailable — check vlm.base_url and vlm.model in config.json]"}
+            return {"mode": mode, "description": vlm_out}
         elif mode == "combined":
             return {"mode": mode, **self.describer.combined(tree, shot, info)}
         else:
