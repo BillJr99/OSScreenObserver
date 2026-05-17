@@ -236,7 +236,7 @@ configuration.
   "enabled":  true,
   "base_url": "http://localhost:11434",  // Ollama's native API port
   "api_key":  null,
-  "model":    "llava:latest",            // any vision-capable model pulled in Ollama
+  "model":    "llama3.2-vision:11b",      // any vision-capable model pulled in Ollama
   "max_tokens": 1500
 }
 ```
