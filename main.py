@@ -236,6 +236,20 @@ def main() -> None:
     except Exception as e:
         logger.warning(f"[main] VLM setup skipped: {e}")
 
+    # ── Ollama model pull ────────────────────────────────────────────────────
+    # Only runs in inspect mode (where stdin is a TTY). Asks once how the
+    # Ollama CLI should be invoked (native, Docker, custom), then checks
+    # which configured model slots are locally available and pulls any that
+    # are missing, streaming pull progress to stderr.
+    try:
+        from ollama_setup import ensure_models
+        ensure_models(
+            config, args.config,
+            interactive_ok=(args.mode == "inspect"),
+        )
+    except Exception as e:
+        logger.warning(f"[main] Ollama model setup skipped: {e}")
+
     # ── Lazy imports (so logging is configured before module-level init runs)
     try:
         from observer     import ScreenObserver

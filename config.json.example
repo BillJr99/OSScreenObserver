@@ -56,6 +56,9 @@
     "image_max_dim":    1600,
     "focused_zoom_pad": 96,
 
+    "_ollama_runner": "How to invoke the Ollama CLI. Leave null and set vlm.enabled=true, then run `python main.py --mode inspect` once — OSScreenObserver will ask you interactively and save the choice here. Common values: [] to skip auto-pull; ['ollama'] for a native install; ['docker', 'exec', 'my_container', 'ollama'] for a Docker-based Ollama. On startup, OSScreenObserver checks which configured models are present in the local Ollama library and pulls any that are missing, printing pull progress to stderr.",
+    "ollama_runner": null,
+
     "_prompt_legacy": "The legacy 'prompt' key remains honoured as a synonym for 'prompt_single' when mode=='single'. When unset, the built-in defaults in description.py are used; tune them per app/agent.",
     "prompt_single":   null,
     "prompt_scene":    null,
