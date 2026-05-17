@@ -117,7 +117,7 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 │           (observer)             (description)                          │
 │                                  ┌──── accessibility (tree prose)       │
 │                                  ├──── ocr (Tesseract)                  │
-│                                  └──── vlm (OpenWebUI vision model)     │
+│                                  └──── vlm (Vision Model)               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
