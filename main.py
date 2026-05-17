@@ -3,10 +3,16 @@ main.py — Entry point for the OS Screen Observer.
 
 Usage
 ─────
-  # Both MCP server (stdio) + web inspector (port 5001) simultaneously
+  # Auto — the default. Detects the launch environment:
+  #   • TTY (interactive terminal) → runs as `inspect` so the VLM picker
+  #     and Ollama auto-pull can prompt, and so the MCP server isn't left
+  #     blocked reading from your keyboard.
+  #   • Non-TTY (Claude Desktop pipes us, CI, headless service) → runs as
+  #     `both`, exposing MCP on stdio and the web inspector at :5001.
   python main.py
 
-  # Web inspector only (useful for manual exploration)
+  # Force a specific mode (overrides the auto detection)
+  python main.py --mode both
   python main.py --mode inspect
 
   # MCP stdio only (useful when launched by Claude Desktop)
@@ -171,15 +177,19 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class = argparse.RawDescriptionHelpFormatter,
         epilog = """
 examples:
-  python main.py                          # both MCP + web UI
+  python main.py                          # auto-detect (TTY → inspect, pipe → both)
+  python main.py --mode both              # MCP stdio + web UI
   python main.py --mode inspect           # web UI only
-  python main.py --mode mcp              # MCP stdio only
+  python main.py --mode mcp               # MCP stdio only
   python main.py --mock                   # mock data (no OS access needed)
-  python main.py --mock --mode inspect --port 8080
+  python main.py --mock --port 8080
         """,
     )
-    p.add_argument("--mode",   choices=["mcp", "inspect", "both"], default="both",
-                   help="Run mode (default: both)")
+    p.add_argument("--mode",
+                   choices=["auto", "mcp", "inspect", "both"], default="auto",
+                   help="Run mode (default: auto — picks 'inspect' when stdin is a "
+                        "TTY so interactive VLM setup can run, else 'both' so "
+                        "MCP framing works on stdio)")
     p.add_argument("--config", default="config.json",
                    help="Path to JSON config file (default: config.json)")
     p.add_argument("--mock",   action="store_true",
@@ -222,6 +232,34 @@ def main() -> None:
     setup_logging(config)
     logger = logging.getLogger("main")
 
+    # ── Auto-mode resolution ────────────────────────────────────────────────
+    # The legacy three modes (mcp/inspect/both) each have a failure mode if
+    # run in the wrong environment:
+    #
+    #   • `both` from a TTY    → MCP server blocks reading framing bytes
+    #                            from a keyboard nobody types on, and the
+    #                            VLM picker is suppressed because stdin
+    #                            "belongs" to MCP.
+    #   • `inspect` from a pipe → an MCP client (Claude Desktop) waiting
+    #                            on stdout never sees a framed message.
+    #
+    # `auto` notifies the user, picks the right concrete mode for the
+    # actual launch environment, and stays out of the way for users who
+    # passed --mode explicitly.
+    if args.mode == "auto":
+        if sys.stdin.isatty():
+            args.mode = "inspect"
+            print("[screen_observer] auto-mode → 'inspect' "
+                  "(TTY detected; MCP needs a piped framing channel, "
+                  "so it would block here — falling back gracefully)",
+                  file=sys.stderr)
+        else:
+            args.mode = "both"
+            print("[screen_observer] auto-mode → 'both' "
+                  "(no TTY; assuming an MCP client is on stdio; "
+                  "interactive VLM setup will be skipped)",
+                  file=sys.stderr)
+
     # ── VLM model setup ──────────────────────────────────────────────────────
     # In `inspect` mode stdin is free, so we can prompt the operator to pick
     # a model and persist the choice. In `mcp`/`both` mode stdin is owned by
@@ -235,6 +273,20 @@ def main() -> None:
         )
     except Exception as e:
         logger.warning(f"[main] VLM setup skipped: {e}")
+
+    # ── Ollama model pull ────────────────────────────────────────────────────
+    # Only runs in inspect mode (where stdin is a TTY). Asks once how the
+    # Ollama CLI should be invoked (native, Docker, custom), then checks
+    # which configured model slots are locally available and pulls any that
+    # are missing, streaming pull progress to stderr.
+    try:
+        from ollama_setup import ensure_models
+        ensure_models(
+            config, args.config,
+            interactive_ok=(args.mode == "inspect"),
+        )
+    except Exception as e:
+        logger.warning(f"[main] Ollama model setup skipped: {e}")
 
     # ── Lazy imports (so logging is configured before module-level init runs)
     try:

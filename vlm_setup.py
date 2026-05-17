@@ -128,18 +128,23 @@ def pick_model_paginated(models: List[str]) -> Optional[str]:
             return raw
 
 
-def save_model_to_config(config_path: str, model: str) -> None:
-    """Persist vlm.model back to *config_path*, preserving all other keys.
+def save_model_to_config(config_path: str, model: str,
+                         *, key: str = "model") -> None:
+    """Persist vlm.<key> back to *config_path*, preserving all other keys.
 
     Writes via a sibling temp file + atomic rename so an interrupted run
     (Ctrl-C, OOM, full disk on the final flush) cannot leave the user
     with a truncated config.json. Encoding is pinned to UTF-8 so the
     custom `vlm.prompt` survives a round-trip on platforms with a
     non-UTF-8 default locale (Windows in particular).
+
+    *key* selects which slot to write — "model" (default, primary),
+    "model_fast", "model_actions", or "model_verify" for the multipass
+    pipeline auxiliary models.
     """
     with open(config_path, encoding="utf-8") as f:
         cfg = json.load(f)
-    cfg.setdefault("vlm", {})["model"] = model
+    cfg.setdefault("vlm", {})[key] = model
     dir_name = os.path.dirname(os.path.abspath(config_path)) or "."
     fd, tmp = tempfile.mkstemp(
         prefix=".config.", suffix=".json.tmp", dir=dir_name,
@@ -193,6 +198,8 @@ def ensure_vlm_model(config: dict, config_path: str, *,
               file=sys.stderr)
         vlm["enabled"] = False
         return
+    print("\n[vlm] Pick the PRIMARY model (used for Pass 2 / single-shot).",
+          file=sys.stderr)
     chosen = pick_model_paginated(models)
     if not chosen:
         print("[vlm] No model chosen — VLM disabled for this run.",
@@ -201,9 +208,46 @@ def ensure_vlm_model(config: dict, config_path: str, *,
         return
     vlm["model"] = chosen
     try:
-        save_model_to_config(config_path, chosen)
+        save_model_to_config(config_path, chosen, key="model")
         print(f"[vlm] Saved vlm.model = {chosen!r} to {config_path}",
               file=sys.stderr)
     except Exception as e:
         print(f"[vlm] (Could not write {config_path}: {e}; using for this "
               f"run only.)", file=sys.stderr)
+
+    # Multipass auxiliaries are optional. Only prompt when the run is
+    # actually configured for multipass and the slot is still empty — a
+    # pre-set value from config.json is honoured without re-asking.
+    if (vlm.get("mode") or "single").lower() != "multipass":
+        return
+
+    for slot, label, help_text in (
+        ("model_fast",    "FAST",
+         "Used for Pass 1 (scene) and per-widget crop labelling. A small "
+         "model (e.g. qwen2.5vl:3b or moondream) is plenty. Skip to reuse "
+         "the primary model."),
+        ("model_actions", "ACTIONS",
+         "Used for Pass 3 (next-action candidates). No image is sent on "
+         "this pass, so a strong text-only LLM (e.g. qwen2.5:14b) is "
+         "cheaper than a VLM. Skip to reuse the primary model."),
+        ("model_verify",  "VERIFY",
+         "OPTIONAL. Used for the verify pass that cross-checks pass-2 "
+         "controls against the accessibility tree. Pick a different model "
+         "family from the primary for a genuine second opinion. Skip to "
+         "leave the verify pass disabled."),
+    ):
+        if vlm.get(slot):
+            continue
+        print(f"\n[vlm] Pick the {label} model (optional). {help_text}",
+              file=sys.stderr)
+        picked = pick_model_paginated(models)
+        if not picked:
+            continue
+        vlm[slot] = picked
+        try:
+            save_model_to_config(config_path, picked, key=slot)
+            print(f"[vlm] Saved vlm.{slot} = {picked!r} to {config_path}",
+                  file=sys.stderr)
+        except Exception as e:
+            print(f"[vlm] (Could not write {config_path}: {e}; using for "
+                  f"this run only.)", file=sys.stderr)

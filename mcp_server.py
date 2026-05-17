@@ -1057,7 +1057,18 @@ class MCPServer:
         elif mode == "vlm":
             if shot is None:
                 return {"error": "Screenshot unavailable for VLM"}
-            vlm_out = self.describer.from_vlm(shot)
+            vlm_mode = (self.describer.vlm_cfg.get("mode") or "single").lower()
+            if vlm_mode == "multipass":
+                env = self.describer.from_vlm_multipass(
+                    shot, root=tree, window=info,
+                )
+                if env is None:
+                    return {"mode": mode,
+                            "description": "[VLM unavailable — check vlm.base_url and vlm.model in config.json]"}
+                return {"mode": mode,
+                        "description": json.dumps(env, indent=2, ensure_ascii=False),
+                        "vlm_structured": env}
+            vlm_out = self.describer.from_vlm(shot, root=tree, window=info)
             if vlm_out is None:
                 return {"mode": mode, "description": "[VLM unavailable — check vlm.base_url and vlm.model in config.json]"}
             return {"mode": mode, "description": vlm_out}

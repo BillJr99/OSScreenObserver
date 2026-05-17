@@ -467,8 +467,15 @@ def _phash(crop: "Image.Image") -> str:
 
 def _vlm_describe_crop(crop: "Image.Image", vlm_cfg: dict) -> str:
     """Single-line natural-language description from an OpenWebUI-compatible
-    chat-completions endpoint. Returns '' on any failure."""
-    if not vlm_cfg or not vlm_cfg.get("enabled") or not vlm_cfg.get("model"):
+    chat-completions endpoint. Returns '' on any failure.
+
+    Prefers ``vlm.model_fast`` when set (a small/cheap VLM is plenty for
+    per-widget labelling); falls back to the primary ``vlm.model``.
+    """
+    if not vlm_cfg or not vlm_cfg.get("enabled"):
+        return ""
+    model = vlm_cfg.get("model_fast") or vlm_cfg.get("model")
+    if not model:
         return ""
     try:
         import base64 as _b64
@@ -476,7 +483,7 @@ def _vlm_describe_crop(crop: "Image.Image", vlm_cfg: dict) -> str:
         crop.save(buf, format="PNG")
         b64 = _b64.b64encode(buf.getvalue()).decode()
         payload = {
-            "model": vlm_cfg["model"],
+            "model": model,
             "max_tokens": 60,
             "messages": [{
                 "role": "user",
