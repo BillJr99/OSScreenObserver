@@ -100,31 +100,6 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 
 ---
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  main.py                                                                │
-│  ┌──────────────────────┐      ┌───────────────────────────────────┐    │
-│  │  Flask web inspector │      │  MCP stdio server                 │    │
-│  │  (background thread) │      │  (main thread, stdin/stdout)      │    │
-│  └──────────┴───────────┘      └──────────────────┴────────────────┘    │
-│             │                                     │                     │
-│             └────────────┬────────────────────────┘                     │
-│                          │                                              │
-│                    ScreenObserver                                       │
-│                   /      |       \                                      │
-│          Accessibility  ASCII    Description                            │
-│             Tree      Renderer   Generator                              │
-│           (observer)             (description)                          │
-│                                  ┌──── accessibility (tree prose)       │
-│                                  ├──── ocr (Tesseract)                  │
-│                                  └──── vlm (Vision Model)               │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
 ## Installation
 
 ### Quick start — automated launchers
