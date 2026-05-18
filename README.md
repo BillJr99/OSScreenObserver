@@ -110,8 +110,8 @@ The REST API endpoints map directly to the `SCREEN_TOOLS` OpenAI/OpenWebUI funct
 │  │  (background thread) │      │  (main thread, stdin/stdout)      │    │
 │  └──────────┴───────────┘      └──────────────────┴────────────────┘    │
 │             │                                     │                     │
-│             └──────────────┬──────────────────────┘                     │
-│                            │                                            │
+│             └────────────┬────────────────────────┘                     │
+│                          │                                              │
 │                    ScreenObserver                                       │
 │                   /      |       \                                      │
 │          Accessibility  ASCII    Description                            │
