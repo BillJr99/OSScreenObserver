@@ -573,6 +573,86 @@ via `mac_adapter.py` / `linux_adapter.py` when present.
 
 ---
 
+## Testing
+
+OSScreenObserver ships with two test tiers:
+
+### Regression suite (`tests/`)
+
+Runs in-process against the Flask test client, mock adapter, and the
+existing `client` / `observer` / `app` fixtures from `tests/conftest.py`.
+No subprocesses, no display, no LLM. Used by the default `ci.yml`.
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/ -m "not user"
+```
+
+### User tests (`tests/user/`)
+
+End-to-end tests that boot a real `python main.py` subprocess and drive
+it over the wire. Covers:
+
+- **REST surface (`test_rest_full.py`)** — every documented endpoint on
+  Flask, including response envelopes, error codes, snapshot lifecycle,
+  observe diff tokens, metrics in Prometheus format.
+- **MCP stdio (`test_mcp_protocol.py`)** — JSON-RPC 2.0 framing over
+  stdio, `initialize` / `tools/list` / `tools/call`, smoke coverage of
+  **all 49 MCP tools**, stdout purity (logs must go to stderr).
+- **Scenarios (`test_scenarios_user.py`)** — drives `login.yaml` from
+  `start` to `welcome` via reactions; oracle pass/fail.
+- **Trace/replay (`test_trace_replay.py`)** — record + replay round trip
+  with no divergences.
+- **ASCII renderer (`test_ascii_render_snapshot.py`)** — locks the
+  sketch output against a stored snapshot.
+- **All 9 assert_state predicate kinds (`test_predicates_full.py`)** —
+  element_exists, element_absent, value_equals, value_matches,
+  text_visible, window_focused, window_exists, tree_hash_equals, and
+  the AND combination.
+- **Element actions (`test_element_actions_full.py`)** — focus,
+  set_value, invoke, select_option, hover, drag, key_into, clear_text,
+  right_click, double_click, the propose-then-confirm flow.
+- **OCR / VLM live tests** — `test_ocr_real_tesseract.py` runs Tesseract
+  against a generated PIL PNG; `test_vlm_real_ollama.py` exercises the
+  multipass VLM pipeline against a reachable Ollama daemon (skipped if
+  none is reachable).
+- **Live X11 (`test_xvfb_live.py`)** — boots OSO without `--mock`,
+  spawns xterm via the fixture, and verifies the Linux adapter picks
+  the window up.
+- **Budgets / redaction / propose (`test_budget_redaction_audit.py`)** —
+  `--max-actions` enforcement, redaction status, propose_action token
+  flow.
+- **Config bootstrap + Ollama-setup live** —
+  `test_setup_config_live.py`, `test_ollama_setup_live.py`.
+
+```bash
+python -m pytest tests/user/ -m "user"
+```
+
+### Docker harness (shared with AutoGUI)
+
+The unified `bash scripts/test-in-docker.sh` in the AutoGUI repo runs
+both repos' regression + user tiers, the integration tier, and the
+pi-extension tier in a single image. The image bundles Xvfb + fluxbox
+so `wmctrl` / `xdotool` / `scrot` / Tesseract all work, optionally
+bundles Ollama with pre-pulled chat + VLM models, and tears down on
+exit even on Ctrl-C. See `AutoGUI/README.md` for the picker walkthrough
+and flag reference.
+
+### Marker plumbing
+
+`pytest.ini` registers four markers:
+
+| Marker | Meaning |
+|---|---|
+| `user` | End-to-end tests that boot a real subprocess |
+| `slow_llm` | Hits a real chat LLM (e.g. Ollama via VLM endpoint) |
+| `slow_vlm` | Hits a real vision LLM |
+| `needs_display` | Requires `$DISPLAY` pointing at an X server |
+| `needs_tesseract` | Requires the `tesseract` binary on PATH |
+
+Default CI lane selects `not user` so the new tier is opt-in.
+
 ## Known Limitations (Prototype)
 
 1. **Accessibility-dark applications** — Games, Electron apps with custom renderers,

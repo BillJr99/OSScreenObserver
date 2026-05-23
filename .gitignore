@@ -16,3 +16,7 @@ venv/
 # and edit for your machine. The committed example is the source of
 # truth for keys, defaults, and inline documentation.
 config.json
+
+# Test harness outputs
+test-results/
+.pytest_cache/
