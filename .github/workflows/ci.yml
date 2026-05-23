@@ -27,5 +27,8 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Lint with ruff
         run: ruff check . --exclude tests
-      - name: Run tests
-        run: pytest tests/ -q
+      - name: Run regression tests
+        run: pytest tests/ -q -m "not user" --ignore=tests/user
+
+      - name: Run user tests (when display + tesseract present)
+        run: pytest tests/user/ -q -m "user and not slow_llm and not slow_vlm and not needs_display"
