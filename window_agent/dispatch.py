@@ -11,7 +11,7 @@ import urllib.request
 from typing import Any, Dict, Optional
 
 from window_agent.client import (
-    _NO_REDIRECT_OPENER, _get, _post,
+    _NO_REDIRECT_OPENER, _get, _post, _win_params,
     api_action, api_bring_to_foreground, api_description,
     api_element_tree, api_full_screenshot, api_list_windows,
     api_observe, api_screenshot, api_sketch, api_visible_areas,
@@ -117,11 +117,11 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         return _get(rest, "/api/monitors")
 
     elif tool_name == "find_element":
-        params: Dict[str, Any] = {"selector": args["selector"]}
-        if "window_uid" in args:
-            params["window_uid"] = args["window_uid"]
-        elif wi is not None:
-            params["window_index"] = wi
+        # Honor the resolved uid/index/title (with defaults applied above);
+        # _win_params drops null/empty selectors so a stray window_uid=None
+        # key from the LLM doesn't suppress index/title selection.
+        params: Dict[str, Any] = {"selector": args["selector"],
+                                  **_win_params(uid, wi, title)}
         return _get(rest, "/api/find_element", params)
 
     # ── P1 / P6: element-targeted actions ───────────────────────────────────
@@ -168,11 +168,7 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         return _post(rest, "/api/wait_idle", body)
 
     elif tool_name == "observe_window_diff":
-        params = {}
-        if "window_uid" in args:
-            params["window_uid"] = args["window_uid"]
-        elif wi is not None:
-            params["window_index"] = wi
+        params = dict(_win_params(uid, wi, title))
         if "since" in args:
             params["since"] = args["since"]
         if "format" in args:
@@ -253,12 +249,8 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
     # ── P3 extras ───────────────────────────────────────────────────────────
     elif tool_name == "get_screenshot_cropped":
         # Pixel data is huge — same omission policy as get_screenshot.
-        params = {}
-        if "window_uid" in args:
-            params["window_uid"] = args["window_uid"]
-        elif wi is not None:
-            params["window_index"] = wi
-        for k in ("element_id", "padding_px", "max_width"):
+        params = dict(_win_params(uid, wi, title))
+        for k in ("element_id", "padding_px", "max_width", "bbox"):
             if k in args:
                 params[k] = args[k]
         result = _get(rest, "/api/screenshot/cropped", params)
@@ -268,13 +260,10 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         return result
 
     elif tool_name == "get_ocr":
-        params = {}
-        if "window_uid" in args:
-            params["window_uid"] = args["window_uid"]
-        elif wi is not None:
-            params["window_index"] = wi
-        if "element_id" in args:
-            params["element_id"] = args["element_id"]
+        params = dict(_win_params(uid, wi, title))
+        for k in ("element_id", "bbox"):
+            if k in args:
+                params[k] = args[k]
         return _get(rest, "/api/ocr", params)
 
     # ── Catch-all: drive any registered tool by name ────────────────────────

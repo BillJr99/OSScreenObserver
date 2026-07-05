@@ -102,8 +102,8 @@ SMOKE_SKIP = {"trace_start", "trace_stop"}
 # Minimal args so no tool blocks (waits) or errors on missing input in a
 # way unrelated to reachability.
 SMOKE_ARGS = {
-    "wait_for":  {"timeout_ms": 20, "predicate": {"kind": "window_exists",
-                                                  "title_regex": "."}},
+    "wait_for":  {"timeout_ms": 20,
+                  "any_of": [{"type": "window_appears", "title_regex": "."}]},
     "wait_idle": {"timeout_ms": 20, "quiet_ms": 5},
     "hover_at":  {"hover_ms": 1},
     "hover_element": {"hover_ms": 1,

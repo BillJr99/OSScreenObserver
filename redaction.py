@@ -19,7 +19,7 @@ from __future__ import annotations
 import io
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ _SANITIZE_SKIP_KEYS = frozenset({
 })
 
 
-def sanitize_screen_text(text: str) -> str:
+def sanitize_screen_text(text: Optional[str]) -> Optional[str]:
     """Strip ANSI escape sequences and non-whitespace control characters
     from screen-extracted text.  Idempotent; returns non-str input as-is."""
     if not isinstance(text, str) or not text:
