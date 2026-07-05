@@ -1671,6 +1671,7 @@ def create_web_app(
     def api_metrics():
         from session import get_session
         s = get_session()
+        tc = s.tree_cache.counters()
         lines = [
             "# HELP oso_step_count Total tool calls processed",
             "# TYPE oso_step_count counter",
@@ -1678,6 +1679,28 @@ def create_web_app(
             "# HELP oso_uptime_seconds Process uptime",
             "# TYPE oso_uptime_seconds gauge",
             f"oso_uptime_seconds {int(s.steps.uptime_s)}",
+            # ── Tree-cache effectiveness (P2) ─────────────────────────────
+            "# HELP oso_tree_cache_hits_total Tree-cache lookups served "
+            "from a fresh cached capture",
+            "# TYPE oso_tree_cache_hits_total counter",
+            f"oso_tree_cache_hits_total {tc['hits']}",
+            "# HELP oso_tree_cache_misses_total Tree-cache lookups that "
+            "required a fresh accessibility-tree walk",
+            "# TYPE oso_tree_cache_misses_total counter",
+            f"oso_tree_cache_misses_total {tc['misses']}",
+            "# HELP oso_tree_cache_entries Windows currently cached",
+            "# TYPE oso_tree_cache_entries gauge",
+            f"oso_tree_cache_entries {tc['entries']}",
+            # ── Capture-latency summary (P2) ──────────────────────────────
+            "# HELP oso_tree_capture_ms Accessibility-tree capture latency "
+            "summary (milliseconds)",
+            "# TYPE oso_tree_capture_ms summary",
+            f"oso_tree_capture_ms_sum {tc['capture_ms_total']}",
+            f"oso_tree_capture_ms_count {tc['capture_count']}",
+            "# HELP oso_tree_capture_ms_max Slowest tree capture this "
+            "session (milliseconds)",
+            "# TYPE oso_tree_capture_ms_max gauge",
+            f"oso_tree_capture_ms_max {tc['capture_ms_max']}",
         ]
         if s.budgets is not None:
             st = s.budgets.status()
@@ -1709,6 +1732,11 @@ def create_web_app(
             args = _merge_query()
         return _tool_response(name, args)
 
+    # /api/healthz must stay cheap enough to poll: the OCR diagnostic
+    # spawns a `tesseract --version` subprocess, so it is computed once
+    # per process and reused (binary availability doesn't change mid-run).
+    _healthz_ocr_cache: dict = {}
+
     @app.route("/api/healthz")
     def api_healthz():
         from session import get_session
@@ -1719,18 +1747,22 @@ def create_web_app(
             "step_count": s.steps.count,
             "adapter": type(observer._adapter).__name__,
             "version": (config.get("mcp", {}) or {}).get("version", "0.2.0"),
+            # P2 telemetry: cache effectiveness + capture-latency summary.
+            "tree_cache": s.tree_cache.counters(),
         }
         # Surface common misconfigurations.
         try:
             from main import config_load_status
             out.update(config_load_status())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"healthz: config_load_status unavailable: {e}")
         try:
-            from ocr_util import diagnose as _ocr_diag
-            out["ocr"] = _ocr_diag(config)
-        except Exception:
-            pass
+            if "ocr" not in _healthz_ocr_cache:
+                from ocr_util import diagnose as _ocr_diag
+                _healthz_ocr_cache["ocr"] = _ocr_diag(config)
+            out["ocr"] = _healthz_ocr_cache["ocr"]
+        except Exception as e:
+            logger.debug(f"healthz: OCR diagnose failed: {e}")
         return jsonify(out)
 
     return app

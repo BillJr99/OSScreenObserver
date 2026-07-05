@@ -77,8 +77,8 @@ curl http://127.0.0.1:5001/api/healthz
 | `GET` | `/api/screenshot` | Base64-encoded PNG screenshot |
 | `POST` | `/api/action` | Execute click, type, key, or scroll action |
 | `GET` | `/api/capabilities` | Server capabilities and platform info |
-| `GET` | `/api/healthz` | Health and uptime |
-| `GET` | `/api/metrics` | Prometheus-format metrics (`text/plain`) |
+| `GET` | `/api/healthz` | Health, uptime, step count, tree-cache hit/miss + capture-latency telemetry, config/OCR diagnostics (cheap to poll — the OCR probe is computed once per process) |
+| `GET` | `/api/metrics` | Prometheus-format metrics (`text/plain`): `oso_step_count`, `oso_uptime_seconds`, `oso_tree_cache_hits_total` / `oso_tree_cache_misses_total` / `oso_tree_cache_entries`, `oso_tree_capture_ms` summary (+`_max`), budget counters when configured, `oso_active_trace` |
 
 ### Example workflow
 

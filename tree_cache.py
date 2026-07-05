@@ -62,6 +62,12 @@ class TreeCache:
         # Last-capture stats per window; kept across invalidation so
         # capability reporting works even when the cache is cold.
         self._stats: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        # Telemetry counters (P2): cache effectiveness + capture latency.
+        self._hits = 0
+        self._misses = 0
+        self._capture_count = 0
+        self._capture_ms_total = 0
+        self._capture_ms_max = 0
 
     # ── Read ─────────────────────────────────────────────────────────────────
 
@@ -73,11 +79,14 @@ class TreeCache:
         with self._lock:
             entry = self._entries.get(window_uid)
             if entry is None:
+                self._misses += 1
                 return None
             if entry.age_s() > limit:
                 self._entries.pop(window_uid, None)
+                self._misses += 1
                 return None
             self._entries.move_to_end(window_uid)
+            self._hits += 1
             return entry
 
     def peek(self, window_uid: str) -> Optional[TreeCacheEntry]:
@@ -99,6 +108,10 @@ class TreeCache:
             named_node_count=int(named_node_count),
         )
         with self._lock:
+            self._capture_count += 1
+            self._capture_ms_total += entry.capture_ms
+            if entry.capture_ms > self._capture_ms_max:
+                self._capture_ms_max = entry.capture_ms
             self._entries[window_uid] = entry
             self._entries.move_to_end(window_uid)
             while len(self._entries) > self.max_windows:
@@ -139,6 +152,23 @@ class TreeCache:
         """Per-window last-capture statistics (survive invalidation)."""
         with self._lock:
             return {uid: dict(s) for uid, s in self._stats.items()}
+
+    def counters(self) -> Dict[str, Any]:
+        """Session-cumulative telemetry: cache hit/miss counts and a
+        capture-latency summary (count / total / max / mean ms).  Surfaced
+        by /api/healthz and /api/metrics."""
+        with self._lock:
+            mean = (self._capture_ms_total / self._capture_count
+                    if self._capture_count else 0.0)
+            return {
+                "hits": self._hits,
+                "misses": self._misses,
+                "entries": len(self._entries),
+                "capture_count": self._capture_count,
+                "capture_ms_total": self._capture_ms_total,
+                "capture_ms_max": self._capture_ms_max,
+                "capture_ms_mean": round(mean, 2),
+            }
 
 
 # Convenience default factory used by session.Session.
