@@ -27,6 +27,8 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Lint with ruff
         run: ruff check . --exclude tests
+      - name: Module size guard (design doc ~600 LOC cap)
+        run: python scripts/check_module_size.py
       - name: Type-check with mypy
         run: mypy .
       - name: Run regression tests (with coverage floor)
