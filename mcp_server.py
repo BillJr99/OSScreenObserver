@@ -57,15 +57,23 @@ _TOOLS: List[Dict] = [
         "description": (
             "Return the accessibility element tree for a window as structured JSON. "
             "Each node carries id, name, role, value, bounds, enabled, focused, "
-            "keyboard_shortcut, and a children array.  Supports server-side "
-            "filtering: roles, exclude_roles, name_regex, visible_only, "
-            "max_text_len, prune_empty, max_nodes (with page_cursor)."
+            "keyboard_shortcut, and a children array.  Trees are returned to "
+            "tree.default_depth levels by default; deeper branches are marked "
+            "truncated:true with a child_count — pass depth (up to "
+            "tree.max_depth) or drill into one branch with scope=<element_id>. "
+            "Supports server-side filtering: roles, exclude_roles, name_regex, "
+            "visible_only, max_text_len, prune_empty, max_nodes (with "
+            "page_cursor)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "window_index":  {"type": "integer"},
                 "window_uid":    {"type": "string"},
+                "depth":         {"type": "integer",
+                                  "description": "Tree depth to return (default tree.default_depth, capped at tree.max_depth)."},
+                "scope":         {"type": "string",
+                                  "description": "Element id (e.g. 'root.3.2') — return only that subtree."},
                 "roles":         {"type": "array", "items": {"type": "string"}},
                 "exclude_roles": {"type": "array", "items": {"type": "string"}},
                 "name_regex":    {"type": "string"},
@@ -456,6 +464,8 @@ _TOOLS: List[Dict] = [
                 "window_index": {"type": "integer"},
                 "since":        {"type": "string"},
                 "format":       {"type": "string", "enum": ["custom", "json-patch"]},
+                "depth":        {"type": "integer",
+                                 "description": "Tree depth for full-format responses (default tree.default_depth, capped at tree.max_depth)."},
             },
             "required": [],
         },

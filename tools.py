@@ -594,6 +594,49 @@ def scroll(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     return annotate_legacy_result(result, step_id=step_id, caused_by_step_id=step_id)
 
 
+def _effective_depth(ctx: ToolContext, args: Dict[str, Any]) -> int:
+    """Depth to return: caller's depth= (clamped to tree.max_depth) or
+    tree.default_depth when the caller passes none."""
+    tree_cfg = ctx.config.get("tree", {}) or {}
+    hard_cap = int(tree_cfg.get("max_depth", 8))
+    requested = args.get("depth")
+    if requested is None:
+        depth = int(tree_cfg.get("default_depth", 5))
+    else:
+        try:
+            depth = int(requested)
+        except (TypeError, ValueError):
+            depth = int(tree_cfg.get("default_depth", 5))
+    return max(0, min(depth, hard_cap))
+
+
+def _truncate_depth(node: Optional[Dict[str, Any]], max_depth: int,
+                    _depth: int = 0) -> Tuple[Optional[Dict[str, Any]], bool]:
+    """Copy *node* limited to *max_depth* levels below it.
+
+    Nodes whose children were dropped are marked ``truncated: true`` with a
+    ``child_count`` so the caller knows to drill in (via scope=/depth=).
+    Returns (tree, any_node_truncated).  The input dict is not mutated."""
+    if node is None:
+        return None, False
+    out = dict(node)
+    children = node.get("children") or []
+    if _depth >= max_depth and children:
+        out["children"] = []
+        out["truncated"] = True
+        out["child_count"] = len(children)
+        return out, True
+    truncated_any = False
+    new_children: List[Dict[str, Any]] = []
+    for c in children:
+        nc, t = _truncate_depth(c, max_depth, _depth + 1)
+        if nc is not None:
+            new_children.append(nc)
+        truncated_any = truncated_any or t
+    out["children"] = new_children
+    return out, truncated_any
+
+
 def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     step_id, caused_by = _new_step_id("get_window_structure")
     windows, res = _resolve_window(ctx, args)
@@ -601,14 +644,33 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
     if info is None:
         return error_dict(Code.WINDOW_GONE, "no windows available",
                           step_id=step_id)
-    tree = ctx.observer.get_element_tree(info.handle,
-                                         window_uid=info.window_uid)
-    if tree is None:
-        return error_dict(Code.INTERNAL, "could not retrieve element tree",
-                          step_id=step_id, window_uid=info.window_uid)
+
+    depth = _effective_depth(ctx, args)
+    scope = args.get("scope")
+
+    if scope:
+        # Drill into one branch only (element-id path, e.g. 'root.3.2').
+        tree = ctx.observer.get_element_subtree(
+            info.handle, scope, max_depth=depth,
+            window_uid=info.window_uid)
+        if tree is None:
+            return error_dict(Code.ELEMENT_NOT_FOUND,
+                              f"no element with id {scope!r} to scope to",
+                              step_id=step_id, scope=scope,
+                              window_uid=info.window_uid)
+        token = None   # scoped captures are not valid diff baselines
+    else:
+        tree = ctx.observer.get_element_tree(info.handle,
+                                             window_uid=info.window_uid)
+        if tree is None:
+            return error_dict(Code.INTERNAL, "could not retrieve element tree",
+                              step_id=step_id, window_uid=info.window_uid)
+        token = None
     serialized = tree.to_dict()
     th = tree_hash(tree)
-    token = get_session().tree_tokens.put(info.window_uid, serialized, th)
+    if not scope:
+        token = get_session().tree_tokens.put(info.window_uid, serialized, th)
+    serialized, depth_truncated = _truncate_depth(serialized, depth)
 
     # P3 filtering / paging --------------------------------------------------
     roles = args.get("roles")
@@ -645,7 +707,7 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
             filtered, max_nodes=max_nodes, page_cursor=page_cursor,
         )
 
-    return {
+    out = {
         "ok": True, "success": True,
         "step_id": step_id, "caused_by_step_id": caused_by,
         "window": info.title,
@@ -657,7 +719,12 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
         "tree_token": token,
         "truncated": truncated,
         "next_cursor": next_cursor,
+        "depth_used": depth,
+        "depth_truncated": depth_truncated,
     }
+    if scope:
+        out["scope"] = scope
+    return out
 
 
 def get_screenshot(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -713,6 +780,7 @@ def get_visible_areas(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
 # ─── P2: observe-with-diff, snapshots, wait_for, composites ──────────────────
 
 def _serialize_full_observation(ctx: ToolContext, info: WindowInfo,
+                                depth: Optional[int] = None,
                                  ) -> Tuple[Optional[UIElement], Dict[str, Any]]:
     tree = ctx.observer.get_element_tree(info.handle,
                                          window_uid=info.window_uid)
@@ -720,7 +788,12 @@ def _serialize_full_observation(ctx: ToolContext, info: WindowInfo,
         return None, {"error": "no tree"}
     serialized = tree.to_dict()
     th = tree_hash(tree)
+    # Diff baselines keep the full capture; only the returned tree is
+    # depth-bounded (with truncated-node markers).
     token = get_session().tree_tokens.put(info.window_uid, serialized, th)
+    depth_truncated = False
+    if depth is not None:
+        serialized, depth_truncated = _truncate_depth(serialized, depth)
     return tree, {
         "format": "full",
         "window_uid": info.window_uid,
@@ -729,6 +802,8 @@ def _serialize_full_observation(ctx: ToolContext, info: WindowInfo,
         "tree_hash": th,
         "tree_token": token,
         "base_token": None,
+        "depth_used": depth,
+        "depth_truncated": depth_truncated,
     }
 
 
@@ -743,9 +818,10 @@ def observe_window(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
                           step_id=step_id)
     since = args.get("since")
     fmt = args.get("format", "custom")
+    depth = _effective_depth(ctx, args)
 
     if not since:
-        _, full = _serialize_full_observation(ctx, info)
+        _, full = _serialize_full_observation(ctx, info, depth=depth)
         full.update({"ok": True, "success": True,
                      "step_id": step_id, "caused_by_step_id": caused_by,
                      "format": "full"})
@@ -762,14 +838,17 @@ def observe_window(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     new_token = get_session().tree_tokens.put(info.window_uid, serialized, th)
 
     if entry is None or entry.window_uid != info.window_uid:
-        # Token expired/wrong-window: return full tree.
+        # Token expired/wrong-window: return full tree (depth-bounded).
+        out_tree, depth_truncated = _truncate_depth(serialized, depth)
         return {
             "ok": True, "success": True,
             "step_id": step_id, "caused_by_step_id": caused_by,
             "window_uid": info.window_uid, "window": info.title,
-            "tree": serialized, "tree_hash": th,
+            "tree": out_tree, "tree_hash": th,
             "tree_token": new_token, "base_token": None,
             "format": "full",
+            "depth_used": depth,
+            "depth_truncated": depth_truncated,
         }
 
     if fmt == "json-patch":

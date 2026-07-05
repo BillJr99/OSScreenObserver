@@ -19,7 +19,7 @@ import os
 import platform
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _dc_replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -178,6 +178,62 @@ class WindowResolution:
     requested_uid: Optional[str]
 
 
+# ─── Subtree helpers (P1 perf: scoped drill-in) ──────────────────────────────
+
+def find_element_by_path(root: Optional[UIElement],
+                         element_path: str) -> Optional[UIElement]:
+    """Locate an element by its positional element-id path (e.g. 'root.3.2').
+
+    Prefers walking the id prefixes level by level (cheap); falls back to a
+    full DFS by exact id for trees whose ids are not strictly positional
+    (e.g. nodes injected by tree synthesis get ids like 'root.2.x1')."""
+    if root is None or not element_path:
+        return None
+    if root.element_id == element_path:
+        return root
+    # Fast path: navigate children whose ids extend the current prefix.
+    if element_path.startswith(root.element_id + "."):
+        node = root
+        prefix = root.element_id
+        rest = element_path[len(prefix) + 1:]
+        found = True
+        for seg in rest.split("."):
+            prefix = f"{prefix}.{seg}"
+            nxt = next((c for c in node.children if c.element_id == prefix),
+                       None)
+            if nxt is None:
+                found = False
+                break
+            node = nxt
+        if found:
+            return node
+    # Fallback: exhaustive search by exact id.
+    stack = [root]
+    while stack:
+        e = stack.pop()
+        if e.element_id == element_path:
+            return e
+        stack.extend(e.children)
+    return None
+
+
+def prune_tree_depth(elem: Optional[UIElement],
+                     max_depth: Optional[int]) -> Optional[UIElement]:
+    """Return a copy of *elem* limited to *max_depth* levels below it.
+
+    Nodes are shallow-copied (bounds objects are shared) so the original —
+    possibly cache-resident — tree is never mutated."""
+    if elem is None or max_depth is None:
+        return elem
+
+    def _copy(e: UIElement, depth: int) -> UIElement:
+        kids = ([] if depth >= max_depth
+                else [_copy(c, depth + 1) for c in e.children])
+        return _dc_replace(e, children=kids)
+
+    return _copy(elem, 0)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Mock Adapter  (no OS dependencies; safe to run in any environment)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +281,16 @@ class MockAdapter:
             if mutated is not None:
                 tree = mutated
         return tree
+
+    def get_element_subtree(self, hwnd=None, element_path: str = "root",
+                            max_depth: Optional[int] = None
+                            ) -> Optional[UIElement]:
+        """Walk only the subtree rooted at *element_path*, to *max_depth*
+        levels below it.  The mock world is synthetic, so this navigates the
+        positional element-id path of a fresh capture."""
+        tree = self.get_element_tree(hwnd)
+        sub = find_element_by_path(tree, element_path)
+        return prune_tree_depth(sub, max_depth)
 
     def _build_tree(self, hwnd=None) -> Optional[UIElement]:
         if self.scenario is not None:
@@ -363,6 +429,23 @@ _UIA_TYPE_TO_ROLE: Dict[int, str] = {
     50039: "SemanticZoom",50040: "AppBar",
 }
 
+# UIA property IDs (UIAutomationClient.h) used by the raw-COM walker.
+_UIA_NAME            = 30005
+_UIA_CTRL_TYPE       = 30003
+_UIA_ENABLED         = 30010
+_UIA_FOCUSED         = 30008
+_UIA_VALUE           = 30045
+_UIA_ACCESS_KEY      = 30023   # keyboard mnemonic, e.g. "Alt+F"
+_UIA_ACCEL_KEY       = 30022   # accelerator, e.g. "Ctrl+Z"
+_UIA_HELP_TEXT       = 30013   # tooltip / description
+_UIA_AUTOMATION_ID   = 30011
+_UIA_RANGE_VALUE     = 30047
+_UIA_RANGE_MIN       = 30049
+_UIA_RANGE_MAX       = 30050
+_UIA_IS_SELECTED     = 30079
+_UIA_EXPAND_STATE    = 30084   # 0=collapsed 1=expanded 2=partial 3=leaf
+_UIA_SCOPE_CHILDREN  = 0x2
+
 
 # Windows Adapter  (requires: pywinauto, pywin32, psutil)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -482,6 +565,72 @@ class WindowsAdapter:
             return uia_tree
         return self._synthesize_trees(uia_tree, pw_tree)
 
+    def get_element_subtree(self, hwnd=None, element_path: str = "root",
+                            max_depth: Optional[int] = None
+                            ) -> Optional[UIElement]:
+        """Walk only the subtree rooted at *element_path* via raw UIA.
+
+        Navigates the positional child indices of the element-id path
+        ('root.3.2' → child 3 → child 2) so only the requested branch is
+        traversed.  Falls back to a full walk plus extraction when the path
+        contains non-positional segments (synthesized ids) or navigation
+        fails."""
+        try:
+            import win32gui
+            if hwnd is None:
+                hwnd = win32gui.GetForegroundWindow()
+        except Exception as e:
+            print(f"[WindowsAdapter:get_element_subtree] win32gui: {e}")
+            return None
+
+        if max_depth is None:
+            max_depth = self.config.get("tree", {}).get("max_depth", 8)
+
+        indices = self._parse_positional_path(element_path)
+        if indices is not None:
+            try:
+                raw_uia, true_cond = self._uia_handles()
+                elem = raw_uia.ElementFromHandle(hwnd)
+                for idx in indices:
+                    kids = elem.FindAll(_UIA_SCOPE_CHILDREN, true_cond)
+                    if idx < 0 or idx >= kids.Length:
+                        elem = None
+                        break
+                    elem = kids.GetElement(idx)
+                if elem is not None:
+                    return self._uia_walk_element(
+                        elem, element_path, 0, max_depth, true_cond)
+            except Exception as e:
+                logger.debug(f"[WindowsAdapter:get_element_subtree] "
+                             f"navigation failed ({e}); falling back")
+
+        # Fallback: full walk + extraction.
+        tree = self.get_element_tree(hwnd)
+        sub = find_element_by_path(tree, element_path)
+        return prune_tree_depth(sub, max_depth)
+
+    @staticmethod
+    def _parse_positional_path(element_path: str) -> Optional[List[int]]:
+        """'root.3.2' → [3, 2]; None when the path is not purely positional."""
+        segs = (element_path or "").split(".")
+        if not segs or segs[0] != "root":
+            return None
+        try:
+            return [int(s) for s in segs[1:]]
+        except ValueError:
+            return None    # synthesized ids like 'root.2.x1'
+
+    def _uia_handles(self):
+        """Return (raw IUIAutomation interface, true condition).
+
+        pywinauto already initialised comtypes/UIA at import time; retrieve
+        the raw COM interface from its singleton (pywinauto ≥0.6 exposes it
+        as .iuia; older versions expose it directly)."""
+        from pywinauto.uia_defines import IUIA
+        _iuia_obj = IUIA()
+        raw_uia = getattr(_iuia_obj, "iuia", _iuia_obj)
+        return raw_uia, raw_uia.CreateTrueCondition()
+
     def _uia_walk(self, hwnd: int) -> Optional[UIElement]:
         """Walk the accessibility tree via raw IUIAutomation COM calls.
 
@@ -491,106 +640,84 @@ class WindowsAdapter:
         always uses UIA and correctly crosses Chromium fragment boundaries.
         """
         try:
-            # pywinauto already initialised comtypes/UIA at import time.
-            # Retrieve the raw IUIAutomation COM interface from pywinauto's singleton.
-            from pywinauto.uia_defines import IUIA
-            _iuia_obj = IUIA()
-            # pywinauto ≥0.6 exposes it as .iuia; older versions expose it directly.
-            raw_uia = getattr(_iuia_obj, "iuia", _iuia_obj)
-
+            raw_uia, true_cond = self._uia_handles()
             root = raw_uia.ElementFromHandle(hwnd)
-            true_cond = raw_uia.CreateTrueCondition()
             max_depth = self.config.get("tree", {}).get("max_depth", 8)
-
-            # UIA property IDs (UIAutomationClient.h)
-            _NAME            = 30005
-            _CTRL_TYPE       = 30003
-            _ENABLED         = 30010
-            _FOCUSED         = 30008
-            _VALUE           = 30045
-            _ACCESS_KEY      = 30023   # keyboard mnemonic, e.g. "Alt+F"
-            _ACCEL_KEY       = 30022   # accelerator, e.g. "Ctrl+Z"
-            _HELP_TEXT       = 30013   # tooltip / description
-            _AUTOMATION_ID   = 30011
-            _RANGE_VALUE     = 30047
-            _RANGE_MIN       = 30049
-            _RANGE_MAX       = 30050
-            _IS_SELECTED     = 30079
-            _EXPAND_STATE    = 30084   # 0=collapsed 1=expanded 2=partial 3=leaf
-            _SCOPE_CHILDREN  = 0x2
-
-            def _prop(elem, pid, default=None):
-                try:
-                    v = elem.GetCurrentPropertyValue(pid)
-                    return v if v is not None else default
-                except Exception:
-                    return default
-
-            def walk(elem, elem_id: str, depth: int) -> UIElement:
-                name = _prop(elem, _NAME, "") or ""
-                ctrl = _prop(elem, _CTRL_TYPE, 0) or 0
-                role = _UIA_TYPE_TO_ROLE.get(ctrl, "Pane")
-                try:
-                    r = elem.CurrentBoundingRectangle
-                    bounds = Bounds(r.left, r.top, r.right - r.left, r.bottom - r.top)
-                except Exception:
-                    bounds = Bounds(0, 0, 0, 0)
-                enabled = bool(_prop(elem, _ENABLED, True))
-                focused = bool(_prop(elem, _FOCUSED, False))
-                value   = _prop(elem, _VALUE) or None
-                # Keyboard shortcut: prefer access key, fall back to accelerator.
-                ks = _prop(elem, _ACCESS_KEY) or _prop(elem, _ACCEL_KEY) or None
-                desc = _prop(elem, _HELP_TEXT) or None
-                aid = _prop(elem, _AUTOMATION_ID) or None
-                # RangeValue pattern: slider / progress / scrollbar
-                vn = _prop(elem, _RANGE_VALUE)
-                vmin = _prop(elem, _RANGE_MIN)
-                vmax = _prop(elem, _RANGE_MAX)
-                # SelectionItem.IsSelected: checkbox / radio / tab / menuitem
-                sel_raw = _prop(elem, _IS_SELECTED)
-                sel = bool(sel_raw) if sel_raw is not None else None
-                # ExpandCollapse: combobox / treeitem / menuitem
-                exp_raw = _prop(elem, _EXPAND_STATE)
-                if exp_raw in (0, 1):
-                    exp = bool(exp_raw)
-                else:
-                    exp = None
-                try:
-                    vn_f = float(vn) if vn is not None else None
-                except Exception:
-                    vn_f = None
-                try:
-                    vmin_f = float(vmin) if vmin is not None else None
-                except Exception:
-                    vmin_f = None
-                try:
-                    vmax_f = float(vmax) if vmax is not None else None
-                except Exception:
-                    vmax_f = None
-                node = UIElement(
-                    element_id=elem_id, name=name, role=role, value=value,
-                    bounds=bounds, enabled=enabled, focused=focused,
-                    keyboard_shortcut=ks or None,
-                    description=desc or None,
-                    selected=sel, expanded=exp,
-                    value_now=vn_f, value_min=vmin_f, value_max=vmax_f,
-                    identifier=str(aid) if aid else None,
-                )
-                if depth < max_depth:
-                    try:
-                        kids = elem.FindAll(_SCOPE_CHILDREN, true_cond)
-                        for i in range(kids.Length):
-                            node.children.append(
-                                walk(kids.GetElement(i), f"{elem_id}.{i}", depth + 1)
-                            )
-                    except Exception:
-                        pass
-                return node
-
-            return walk(root, "root", 0)
+            return self._uia_walk_element(root, "root", 0, max_depth, true_cond)
         except Exception as e:
             logger.debug(f"[WindowsAdapter:_uia_walk] {e}")
             return None
+
+    @staticmethod
+    def _uia_prop(elem, pid, default=None):
+        try:
+            v = elem.GetCurrentPropertyValue(pid)
+            return v if v is not None else default
+        except Exception:
+            return default
+
+    def _uia_walk_element(self, elem, elem_id: str, depth: int,
+                          max_depth: int, true_cond) -> UIElement:
+        _prop = self._uia_prop
+        name = _prop(elem, _UIA_NAME, "") or ""
+        ctrl = _prop(elem, _UIA_CTRL_TYPE, 0) or 0
+        role = _UIA_TYPE_TO_ROLE.get(ctrl, "Pane")
+        try:
+            r = elem.CurrentBoundingRectangle
+            bounds = Bounds(r.left, r.top, r.right - r.left, r.bottom - r.top)
+        except Exception:
+            bounds = Bounds(0, 0, 0, 0)
+        enabled = bool(_prop(elem, _UIA_ENABLED, True))
+        focused = bool(_prop(elem, _UIA_FOCUSED, False))
+        value   = _prop(elem, _UIA_VALUE) or None
+        # Keyboard shortcut: prefer access key, fall back to accelerator.
+        ks = _prop(elem, _UIA_ACCESS_KEY) or _prop(elem, _UIA_ACCEL_KEY) or None
+        desc = _prop(elem, _UIA_HELP_TEXT) or None
+        aid = _prop(elem, _UIA_AUTOMATION_ID) or None
+        # RangeValue pattern: slider / progress / scrollbar
+        vn = _prop(elem, _UIA_RANGE_VALUE)
+        vmin = _prop(elem, _UIA_RANGE_MIN)
+        vmax = _prop(elem, _UIA_RANGE_MAX)
+        # SelectionItem.IsSelected: checkbox / radio / tab / menuitem
+        sel_raw = _prop(elem, _UIA_IS_SELECTED)
+        sel = bool(sel_raw) if sel_raw is not None else None
+        # ExpandCollapse: combobox / treeitem / menuitem
+        exp_raw = _prop(elem, _UIA_EXPAND_STATE)
+        if exp_raw in (0, 1):
+            exp = bool(exp_raw)
+        else:
+            exp = None
+        try:
+            vn_f = float(vn) if vn is not None else None
+        except Exception:
+            vn_f = None
+        try:
+            vmin_f = float(vmin) if vmin is not None else None
+        except Exception:
+            vmin_f = None
+        try:
+            vmax_f = float(vmax) if vmax is not None else None
+        except Exception:
+            vmax_f = None
+        node = UIElement(
+            element_id=elem_id, name=name, role=role, value=value,
+            bounds=bounds, enabled=enabled, focused=focused,
+            keyboard_shortcut=ks or None,
+            description=desc or None,
+            selected=sel, expanded=exp,
+            value_now=vn_f, value_min=vmin_f, value_max=vmax_f,
+            identifier=str(aid) if aid else None,
+        )
+        if depth < max_depth:
+            try:
+                kids = elem.FindAll(_UIA_SCOPE_CHILDREN, true_cond)
+                for i in range(kids.Length):
+                    node.children.append(self._uia_walk_element(
+                        kids.GetElement(i), f"{elem_id}.{i}",
+                        depth + 1, max_depth, true_cond))
+            except Exception:
+                pass
+        return node
 
     def _walk(self, wrapper, elem_id: str, depth: int, max_depth: int) -> UIElement:
         try:
@@ -1263,6 +1390,49 @@ class ScreenObserver:
         except Exception:
             return None
 
+    def get_element_subtree(self, hwnd=None, element_path: str = "root",
+                            max_depth: Optional[int] = None,
+                            window_uid: Optional[str] = None,
+                            use_cache: bool = True) -> Optional[UIElement]:
+        """Return only the subtree rooted at *element_path* ('root.3.2').
+
+        Resolution order:
+          1. a fresh cached full capture (no walk at all),
+          2. the adapter's native get_element_subtree (walks just the branch),
+          3. full walk + extraction.
+        The result is depth-limited to *max_depth* levels below the subtree
+        root and safe to mutate (cache extraction returns copies)."""
+        tree_cfg = self.config.get("tree", {}) or {}
+        if max_depth is None:
+            max_depth = int(tree_cfg.get("max_depth", 8))
+
+        # 1. Serve from a fresh cached capture.
+        cache = self._tree_cache()
+        if use_cache and window_uid and cache is not None:
+            entry = cache.get(window_uid,
+                              ttl_s=float(tree_cfg.get("cache_ttl_s", 2.0)))
+            if entry is not None:
+                sub = find_element_by_path(entry.tree, element_path)
+                if sub is not None:
+                    return prune_tree_depth(sub, max_depth)
+
+        # 2. Adapter-native scoped walk.
+        native = getattr(self._adapter, "get_element_subtree", None)
+        if native is not None:
+            try:
+                sub = native(hwnd, element_path, max_depth)
+                if sub is not None:
+                    return sub
+            except Exception:
+                logger.exception("[ScreenObserver:get_element_subtree] "
+                                 "adapter subtree walk failed; falling back")
+
+        # 3. Full walk + extraction.
+        tree = self.get_element_tree(hwnd, window_uid=window_uid,
+                                     use_cache=use_cache)
+        sub = find_element_by_path(tree, element_path)
+        return prune_tree_depth(sub, max_depth)
+
     def get_screenshot(self, hwnd=None) -> Optional[bytes]:
         return self._adapter.get_screenshot(hwnd)
 
@@ -1408,6 +1578,7 @@ class ScreenObserver:
             },
             "config": {
                 "tree_max_depth": (self.config.get("tree", {}) or {}).get("max_depth", 8),
+                "tree_default_depth": (self.config.get("tree", {}) or {}).get("default_depth", 5),
                 "ascii_grid": {
                     "width":  (self.config.get("ascii_sketch", {}) or {}).get("grid_width",  110),
                     "height": (self.config.get("ascii_sketch", {}) or {}).get("grid_height",  38),

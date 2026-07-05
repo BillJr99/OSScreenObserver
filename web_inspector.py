@@ -1253,7 +1253,7 @@ def create_web_app(
         for bool_key in ("visible_only", "prune_empty"):
             if bool_key in args:
                 args[bool_key] = str(args[bool_key]).lower() in ("1", "true", "yes")
-        for int_key in ("max_text_len", "max_nodes"):
+        for int_key in ("max_text_len", "max_nodes", "depth"):
             if int_key in args:
                 try:
                     args[int_key] = int(args[int_key])
@@ -1512,7 +1512,13 @@ def create_web_app(
 
     @app.route("/api/observe")
     def api_observe():
-        return _tool_response("observe_window", _merge_query())
+        args = _merge_query()
+        if "depth" in args:
+            try:
+                args["depth"] = int(args["depth"])
+            except (TypeError, ValueError):
+                args.pop("depth", None)
+        return _tool_response("observe_window", args)
 
     @app.route("/api/snapshot", methods=["POST"])
     def api_snapshot():

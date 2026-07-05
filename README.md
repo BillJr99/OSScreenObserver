@@ -416,7 +416,7 @@ The web inspector exposes the following endpoints (all `GET` unless noted):
 | Endpoint | Params | Description |
 |----------|--------|-------------|
 | `GET /api/windows` | — | List all visible windows |
-| `GET /api/structure` | `window_index` | Accessibility element tree (JSON) |
+| `GET /api/structure` | `window_index`, `depth`, `scope` | Accessibility element tree (JSON). Returned to `tree.default_depth` levels by default; deeper branches carry `truncated: true` + `child_count` — drill in with `scope=<element_id>` and/or a larger `depth` (capped at `tree.max_depth`) |
 | `GET /api/description` | `window_index` | Combined description (accessibility + OCR + VLM, whatever is available). `mode` query parameter is accepted but ignored — always returns combined output. |
 | `GET /api/sketch` | `window_index`, `grid_width`, `grid_height`, `ocr` | ASCII layout sketch |
 | `GET /api/screenshot` | `window_index` | Screenshot as base64 PNG |
@@ -522,6 +522,7 @@ The following shows the built-in defaults (when no `config.json` is provided). T
   },
   "tree": {
     "max_depth": 8,            // hard cap on traversal depth
+    "default_depth": 5,        // depth returned when no depth= is requested (drill in via scope=)
     "cache_ttl_s": 2.0         // per-window tree cache TTL; input actions invalidate automatically
   },
   "logging": {

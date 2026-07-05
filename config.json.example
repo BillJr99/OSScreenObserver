@@ -79,9 +79,10 @@
     "vlm_fallback": false
   },
 
-  "_tree": "Accessibility-tree walk limits. 'max_depth' caps recursion so pathological apps (web views with deep DOMs) cannot blow up tree retrieval. Raise it if your target app legitimately nests deeper. 'cache_ttl_s' controls the per-window tree cache: read-only tools reuse the last capture for this many seconds instead of re-walking the tree (input actions invalidate the cache automatically); set 0 to disable reuse.",
+  "_tree": "Accessibility-tree walk limits. 'max_depth' is the hard cap on recursion so pathological apps (web views with deep DOMs) cannot blow up tree retrieval; raise it if your target app legitimately nests deeper. 'default_depth' is the depth get_window_structure / observe_window return when the caller passes no explicit depth= — deeper branches are marked truncated:true with a child_count so agents can drill in via the scope= parameter (requests may go deeper, up to max_depth). 'cache_ttl_s' controls the per-window tree cache: read-only tools reuse the last capture for this many seconds instead of re-walking the tree (input actions invalidate the cache automatically); set 0 to disable reuse.",
   "tree": {
     "max_depth": 8,
+    "default_depth": 5,
     "cache_ttl_s": 2.0
   },
 
