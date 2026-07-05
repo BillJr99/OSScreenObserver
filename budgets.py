@@ -48,12 +48,12 @@ class _Limit:
         return self.limit is not None
 
     def remaining(self) -> Optional[int]:
-        if not self.is_set():
+        if self.limit is None:
             return None
         return max(0, self.limit - self.used)
 
     def trip(self) -> bool:
-        return self.is_set() and self.used >= self.limit
+        return self.limit is not None and self.used >= self.limit
 
 
 class BudgetStore:
@@ -93,7 +93,8 @@ class BudgetStore:
         with self.lock:
             now = time.time()
             elapsed = now - self.started_at
-            if self.session_secs.is_set() and elapsed >= self.session_secs.limit:
+            session_limit = self.session_secs.limit
+            if session_limit is not None and elapsed >= session_limit:
                 return error_dict(Code.BUDGET_EXCEEDED,
                                   "max_session_seconds reached",
                                   elapsed=int(elapsed))

@@ -361,8 +361,8 @@ def _parse_role_and_preds(token: str) -> Tuple[str, List[Predicate]]:
             pos = end + 1
             continue
         # Playwright :has-text("…") / :text("…") → name*="…"
-        if rest[pos] == ":" and _HASTEXT_RE.match(rest, pos):
-            ht = _HASTEXT_RE.match(rest, pos)
+        ht = _HASTEXT_RE.match(rest, pos) if rest[pos] == ":" else None
+        if ht is not None:
             text_val = ht.group("dq") if ht.group("dq") is not None else ht.group("sq")
             preds.append(Predicate(key="name", op="*=", value=text_val))
             pos = ht.end()

@@ -4,6 +4,7 @@ session.py — Single global session state (design doc D2).
 Holds per-process state shared between the REST and MCP interfaces:
   - step_id counter and last input step (for caused_by_step_id)
   - tree token ring buffer per window_uid (for since= diffs)
+  - per-window tree cache (avoids re-walking the accessibility tree)
   - snapshots (TTL-bounded, LRU)
   - confirmation tokens (TTL-bounded)
   - active trace handle (set by tracing.py)
@@ -19,6 +20,8 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+
+from tree_cache import TreeCache
 
 
 # ─── Tunables (overridable from config) ──────────────────────────────────────
@@ -212,6 +215,7 @@ class _StepCounter:
         with self._lock:
             sid = self._next
             self._next += 1
+            caused_by: Optional[int]
             if is_input:
                 caused_by = sid
                 self._last_input_step = sid
@@ -234,6 +238,7 @@ class _StepCounter:
 @dataclass
 class Session:
     tree_tokens: _TreeTokenStore = field(default_factory=_TreeTokenStore)
+    tree_cache:  TreeCache       = field(default_factory=TreeCache)
     snapshots:   _SnapshotStore  = field(default_factory=_SnapshotStore)
     confirms:    _ConfirmStore   = field(default_factory=_ConfirmStore)
     steps:       _StepCounter    = field(default_factory=_StepCounter)

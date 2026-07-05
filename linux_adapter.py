@@ -70,8 +70,8 @@ def install_into(observer: Any) -> bool:
             states = node.getState().getStates()
             enabled = pyatspi.STATE_ENABLED in states
             focused = pyatspi.STATE_FOCUSED in states
-            selected = (pyatspi.STATE_SELECTED in states
-                        or pyatspi.STATE_CHECKED in states)
+            selected: 'bool | None' = (pyatspi.STATE_SELECTED in states
+                                       or pyatspi.STATE_CHECKED in states)
             expanded = pyatspi.STATE_EXPANDED in states if (
                 pyatspi.STATE_EXPANDABLE in states) else None
             # STATE_SELECTED on non-selectable widgets is meaningless; only
@@ -92,8 +92,9 @@ def install_into(observer: Any) -> bool:
             value_now = float(iv.currentValue)
             value_min = float(iv.minimumValue)
             value_max = float(iv.maximumValue)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[atspi] value interface unavailable for "
+                         f"{eid}: {e}")
 
         ui = UIElement(
             element_id=eid, name=name, role=role, value=value,
@@ -108,8 +109,8 @@ def install_into(observer: Any) -> bool:
             for i in range(node.childCount):
                 ui.children.append(_walk(node[i], f"{eid}.{i}",
                                           depth + 1, max_depth))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[atspi] child walk truncated at {eid}: {e}")
         return ui
 
     def get_element_tree(hwnd=None) -> Optional[UIElement]:

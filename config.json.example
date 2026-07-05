@@ -1,11 +1,12 @@
 {
   "_about": "Copy this file to config.json and edit for your machine. config.json is in .gitignore. All sections are optional; OSScreenObserver falls back to reasonable defaults when a key is missing. Keys starting with an underscore are documentation-only and ignored at load time.",
 
-  "_web_ui": "HTTP inspector server. Bind to 127.0.0.1 unless you are deliberately exposing it to your LAN. Disable debug in shared environments.",
+  "_web_ui": "HTTP inspector server. The API is unauthenticated, so 'host' defaults to loopback (127.0.0.1); set '0.0.0.0' (or pass --host 0.0.0.0) only to deliberately expose it — e.g. inside a Docker container with a published port — and expect a startup warning. 'cors_origins' is the CORS allowlist: [] (default) sends no CORS headers so browsers enforce same-origin (the bundled inspector UI is same-origin and unaffected); list explicit origins, or [\"*\"] for isolated Docker/testing rigs. Disable debug in shared environments.",
   "web_ui": {
     "host": "127.0.0.1",
     "port": 5001,
-    "debug": false
+    "debug": false,
+    "cors_origins": []
   },
 
   "_mcp": "Identifiers reported over the MCP framing channel. Bump 'version' when you publish a breaking change to a custom fork.",
@@ -79,9 +80,13 @@
     "vlm_fallback": false
   },
 
-  "_tree": "Accessibility-tree walk limits. 'max_depth' caps recursion so pathological apps (web views with deep DOMs) cannot blow up tree retrieval. Raise it if your target app legitimately nests deeper.",
+  "_tree": "Accessibility-tree walk limits. 'max_depth' is the hard cap on recursion so pathological apps (web views with deep DOMs) cannot blow up tree retrieval; raise it if your target app legitimately nests deeper. 'default_depth' is the depth get_window_structure / observe_window return when the caller passes no explicit depth= — deeper branches are marked truncated:true with a child_count so agents can drill in via the scope= parameter (requests may go deeper, up to max_depth). 'cache_ttl_s' controls the per-window tree cache: read-only tools reuse the last capture for this many seconds instead of re-walking the tree (input actions invalidate the cache automatically); set 0 to disable reuse. 'strategy' (Windows only) selects the capture pipeline: 'merged' (default) runs both the raw-UIA walk and a second pywinauto walk and synthesizes them — richest tree, slowest; 'uia_only' runs just the raw-UIA walk — roughly half the capture time, may miss a few native-control properties the merge would contribute. 'sparse_threshold': when a capture has fewer than this many named non-root nodes, get_window_structure attaches a degraded:{reason:'sparse_accessibility_tree'} hint suggesting OCR/VLM fallbacks.",
   "tree": {
-    "max_depth": 8
+    "max_depth": 8,
+    "default_depth": 5,
+    "cache_ttl_s": 2.0,
+    "strategy": "merged",
+    "sparse_threshold": 5
   },
 
   "_logging": "Python logging level for the OSScreenObserver loggers. Use DEBUG to trace adapter behavior, WARNING to silence routine info.",

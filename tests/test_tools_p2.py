@@ -85,3 +85,75 @@ def test_click_and_observe(client):
     }).get_json()
     assert r["ok"] is True
     assert "observation" in r
+
+
+# ─── P1 perf: changed_only + perf telemetry ──────────────────────────────────
+
+def _mutate_editor(tree):
+    for c in tree.children:
+        if c.role == "Document":
+            c.value = "changed content"
+    return tree
+
+
+def test_observe_changed_only_unchanged(client):
+    client.get("/api/observe?window_index=0")            # warm the baseline
+    r = client.get("/api/observe?window_index=0&changed_only=1").get_json()
+    assert r["ok"] is True
+    assert r["changed_only"] is True
+    assert r["unchanged"] is True
+    assert r["tree_hash"].startswith("sha1:")
+    assert "tree" not in r and "changes" not in r        # tiny response
+
+
+def test_observe_changed_only_returns_diff(client, observer):
+    base = client.get("/api/observe?window_index=0").get_json()
+    observer._adapter.tree_mutator = _mutate_editor
+    r = client.get("/api/observe?window_index=0&changed_only=1").get_json()
+    assert r["ok"] is True
+    assert r["unchanged"] is False
+    assert r["format"] == "custom"
+    assert r["changes"]                                   # non-empty diff
+    assert r["tree_hash"] != base["tree_hash"]
+    assert "tree" not in r                                # diff, not full tree
+
+
+def test_observe_changed_only_without_baseline_returns_full(client):
+    r = client.get("/api/observe?window_index=0&changed_only=1").get_json()
+    assert r["ok"] is True
+    assert r["format"] == "full"
+    assert "tree" in r
+    assert r["perf"]["cache"] == "bypass"
+
+
+def test_observe_perf_telemetry(client):
+    r = client.get("/api/observe?window_index=0").get_json()
+    perf = r["perf"]
+    assert set(perf) == {"capture_ms", "node_count", "cache", "depth_used"}
+    assert perf["cache"] == "miss"
+    assert perf["node_count"] > 1
+    assert perf["depth_used"] == 5
+
+
+def test_structure_perf_telemetry_cache_hit(client):
+    r1 = client.get("/api/structure?window_index=0").get_json()
+    assert r1["perf"]["cache"] == "miss"
+    r2 = client.get("/api/structure?window_index=0").get_json()
+    assert r2["perf"]["cache"] == "hit"
+    assert r2["perf"]["node_count"] == r1["perf"]["node_count"]
+
+
+def test_structure_scoped_perf(client):
+    client.get("/api/structure?window_index=0")           # warm cache
+    r = client.get("/api/structure?window_index=0&scope=root.4").get_json()
+    assert r["perf"]["cache"] == "hit"
+    assert r["perf"]["depth_used"] == 5
+
+
+def test_observe_since_perf(client):
+    full = client.get("/api/observe?window_index=0").get_json()
+    diff = client.get(
+        f"/api/observe?window_index=0&since={full['tree_token']}"
+    ).get_json()
+    assert "perf" in diff
+    assert diff["perf"]["cache"] in ("hit", "miss")

@@ -20,3 +20,9 @@ config.json
 # Test harness outputs
 test-results/
 .pytest_cache/
+
+# Coverage artifacts (pytest-cov)
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/

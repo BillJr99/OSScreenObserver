@@ -89,7 +89,8 @@ def _ask_runner() -> Optional[List[str]]:
         file=sys.stderr,
     )
 
-    options: List[Tuple[str, List[str]]] = []
+    # Each option's prefix is a token list; None marks the "custom" choice.
+    options: List[Tuple[str, Optional[List[str]]]] = []
 
     # Option 1: native ollama on PATH
     if _test_runner(["ollama"]):
@@ -118,8 +119,8 @@ def _ask_runner() -> Optional[List[str]]:
         if raw.isdigit():
             idx = int(raw) - 1
             if 0 <= idx < len(options):
-                _, prefix = options[idx]
-                if prefix is None:
+                _, chosen = options[idx]
+                if chosen is None:
                     # Custom entry
                     try:
                         custom = input(
@@ -145,9 +146,9 @@ def _ask_runner() -> Optional[List[str]]:
                         if ok != "y":
                             continue
                     return tokens
-                if prefix == []:           # skip
+                if chosen == []:           # skip
                     return []
-                return prefix
+                return chosen
         print(f"  Please enter a number 1–{len(options)}.", file=sys.stderr)
 
 

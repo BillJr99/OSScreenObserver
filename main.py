@@ -54,7 +54,11 @@ import traceback
 # ─────────────────────────────────────────────────────────────────────────────
 
 _DEFAULT_CONFIG = {
-    "web_ui":  {"host": "0.0.0.0", "port": 5001, "debug": False},
+    # Loopback by default: the HTTP API is unauthenticated, so it must not
+    # be reachable from the network unless the operator explicitly opts in
+    # via --host / web_ui.host (e.g. 0.0.0.0 for Docker deployments).
+    "web_ui":  {"host": "127.0.0.1", "port": 5001, "debug": False,
+                "cors_origins": []},
     "mcp":     {"server_name": "os-screen-observer", "version": "0.1.0"},
     "ocr":     {"enabled": True, "tesseract_cmd": None, "min_confidence": 30},
     "vlm":     {"enabled": False,
@@ -63,7 +67,8 @@ _DEFAULT_CONFIG = {
                 "model":    None,
                 "max_tokens": 1500},
     "ascii_sketch": {"grid_width": 110, "grid_height": 38, "unicode_box": True},
-    "tree":    {"max_depth": 8},
+    "tree":    {"max_depth": 8, "default_depth": 5, "cache_ttl_s": 2.0,
+                "strategy": "merged", "sparse_threshold": 5},
     "logging": {"level": "INFO"},
     "mock":    False,
     "platform": "auto",
@@ -130,10 +135,11 @@ def load_config(path: str) -> dict:
             print(f"\n[main:load_config] {msg}\n", file=sys.stderr)
             return dict(_DEFAULT_CONFIG)
         # Deep-merge with defaults so missing keys are always present
-        merged = dict(_DEFAULT_CONFIG)
+        merged: dict = dict(_DEFAULT_CONFIG)
         for k, v in cfg.items():
-            if isinstance(v, dict) and isinstance(merged.get(k), dict):
-                merged[k] = {**merged[k], **v}
+            base = merged.get(k)
+            if isinstance(v, dict) and isinstance(base, dict):
+                merged[k] = {**base, **v}
             else:
                 merged[k] = v
         return merged
@@ -153,6 +159,32 @@ def config_load_status() -> dict:
     """Reported by /api/healthz so misconfigurations are obvious."""
     return {"config_path": _CONFIG_PATH_USED,
             "config_error": _CONFIG_LOAD_ERROR or None}
+
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def bind_warning(host: str) -> "str | None":
+    """Return a prominent warning banner when *host* exposes the HTTP API
+    beyond loopback, or None for loopback binds.
+
+    The web/REST surface is unauthenticated by design (see README
+    "Security & Network Bind Defaults"); a non-loopback bind is an explicit
+    operator opt-in (Docker, isolated test VMs) and deserves a loud notice.
+    """
+    if (host or "").strip().lower() in _LOOPBACK_HOSTS:
+        return None
+    return (
+        "╔══════════════════════════════════════════════════════════════════════╗\n"
+        "║  SECURITY WARNING:                                                    ║\n"
+        "║  unauthenticated action API exposed to the network                    ║\n"
+        f"║  web_ui.host = {host!r:<54s} ║\n"
+        "║  Anyone who can reach this port can observe the screen and inject    ║\n"
+        "║  clicks/keystrokes via /api/action. Only use a non-loopback bind     ║\n"
+        "║  inside an isolated container/VM or behind a firewall or             ║\n"
+        "║  authenticating reverse proxy.                                        ║\n"
+        "╚══════════════════════════════════════════════════════════════════════╝"
+    )
 
 
 def setup_logging(config: dict) -> None:
@@ -365,6 +397,16 @@ def main() -> None:
 
         host = config["web_ui"]["host"]
         port = config["web_ui"]["port"]
+
+        warning = bind_warning(host)
+        if warning:
+            print(warning, file=sys.stderr)
+            logger.warning(
+                "[main] unauthenticated action API exposed to the network "
+                f"(web_ui.host={host!r}); this is an explicit opt-in — see "
+                "README 'Security & Network Bind Defaults'"
+            )
+
         app  = create_web_app(observer, renderer, describer, config)
 
         def _run_flask():
