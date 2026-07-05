@@ -64,7 +64,7 @@ _DEFAULT_CONFIG = {
                 "max_tokens": 1500},
     "ascii_sketch": {"grid_width": 110, "grid_height": 38, "unicode_box": True},
     "tree":    {"max_depth": 8, "default_depth": 5, "cache_ttl_s": 2.0,
-                "strategy": "merged"},
+                "strategy": "merged", "sparse_threshold": 5},
     "logging": {"level": "INFO"},
     "mock":    False,
     "platform": "auto",

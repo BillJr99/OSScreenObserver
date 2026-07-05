@@ -525,7 +525,8 @@ The following shows the built-in defaults (when no `config.json` is provided). T
     "max_depth": 8,            // hard cap on traversal depth
     "default_depth": 5,        // depth returned when no depth= is requested (drill in via scope=)
     "cache_ttl_s": 2.0,        // per-window tree cache TTL; input actions invalidate automatically
-    "strategy": "merged"       // Windows capture pipeline: "merged" (UIA + pywinauto) or "uia_only" (faster)
+    "strategy": "merged",      // Windows capture pipeline: "merged" (UIA + pywinauto) or "uia_only" (faster)
+    "sparse_threshold": 5      // fewer named nodes than this → degraded (sparse tree) hint in results
   },
   "logging": {
     "level": "INFO"            // DEBUG / INFO / WARNING / ERROR
@@ -661,15 +662,23 @@ Default CI lane selects `not user` so the new tier is opt-in.
 
 1. **Accessibility-dark applications** — Games, Electron apps with custom renderers,
    and applications that do not instrument UIA will produce sparse trees. The OCR
-   and VLM modalities degrade more gracefully in these cases.
+   and VLM modalities degrade more gracefully in these cases; `get_window_structure`
+   flags such captures with `degraded: {reason: "sparse_accessibility_tree", …}`
+   (threshold: `tree.sparse_threshold`) and `get_capabilities` reports per-window
+   `tree_stats` so agents can switch modality automatically.
 
 2. **Prompt injection risk** — Screen content is included verbatim in tool results.
    Malicious content on-screen could attempt to influence the AI's behavior. Apply
    appropriate trust boundaries when using this server in production contexts.
 
 3. **Performance** — Full tree traversal on a complex window (e.g., a browser with
-   many DOM-mapped UIA nodes) can take several seconds. The `tree.max_depth`
-   config key limits traversal depth.
+   many DOM-mapped UIA nodes) can take several seconds. Mitigations: captures are
+   cached per window for `tree.cache_ttl_s` (input actions invalidate), results
+   are depth-bounded to `tree.default_depth` with `scope=`/`depth=` drill-in,
+   `observe_window` supports `changed_only=1`, and on Windows `tree.strategy:
+   "uia_only"` plus UIA CacheRequest batching cut per-walk COM round trips.
+   Every structure/observe result reports `perf.capture_ms` so slow windows are
+   visible. `tree.max_depth` still hard-caps traversal depth.
 
 4. **Action safety** — The `click_at`, `type_text`, and `press_key` tools execute
    real input events. Apply appropriate authorization controls before exposing

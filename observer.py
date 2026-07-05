@@ -1673,7 +1673,18 @@ class ScreenObserver:
                     "height": (self.config.get("ascii_sketch", {}) or {}).get("grid_height",  38),
                 },
             },
+            # Per-window last-capture statistics (node_count,
+            # named_node_count, capture_ms, captured_at) so agents can spot
+            # accessibility-dark windows without another walk.
+            "tree_stats": self._last_capture_stats(),
         }
+
+    def _last_capture_stats(self) -> Dict[str, Dict[str, Any]]:
+        cache = self._tree_cache()
+        try:
+            return cache.stats() if cache is not None else {}
+        except Exception:
+            return {}
 
     # ── Element occlusion (design doc D14) ────────────────────────────────────
 

@@ -205,3 +205,58 @@ def test_mock_adapter_mutation_hook(observer):
     tree = observer.get_element_tree(None)
     assert tree.name == "Replaced"
     assert adapter.capture_count == 1
+
+
+# ─── P1: degradation signal (sparse accessibility trees) ─────────────────────
+
+def _sparse_tree(tree):
+    """Simulate an accessibility-dark window: one named child only."""
+    return UIElement(
+        "root", "Game Window", "Window", bounds=Bounds(0, 0, 800, 600),
+        children=[
+            UIElement("root.0", "Canvas", "Pane", bounds=Bounds(0, 0, 800, 600)),
+            UIElement("root.1", "", "Pane", bounds=Bounds(0, 0, 10, 10)),
+        ])
+
+
+def test_sparse_tree_attaches_degraded(ctx, observer):
+    observer._adapter.tree_mutator = _sparse_tree
+    r = _tools.dispatch(ctx, "get_window_structure", {"window_index": 0})
+    assert r["ok"] is True
+    d = r["degraded"]
+    assert d["reason"] == "sparse_accessibility_tree"
+    assert d["named_node_count"] == 1          # unnamed nodes don't count
+    assert d["suggested_fallbacks"] == ["get_ocr", "get_screen_description"]
+
+
+def test_rich_tree_has_no_degraded(ctx):
+    r = _tools.dispatch(ctx, "get_window_structure", {"window_index": 0})
+    assert r["ok"] is True
+    assert "degraded" not in r
+
+
+def test_sparse_threshold_configurable(ctx, observer, config):
+    config.setdefault("tree", {})["sparse_threshold"] = 100
+    r = _tools.dispatch(ctx, "get_window_structure", {"window_index": 0})
+    assert r["degraded"]["threshold"] == 100   # even the rich mock tree trips
+
+
+def test_capabilities_reports_tree_stats(ctx, observer):
+    _, uid = _first_window(observer)
+    caps0 = _tools.dispatch(ctx, "get_capabilities", {})
+    assert caps0["tree_stats"] == {}           # nothing captured yet
+
+    _tools.dispatch(ctx, "get_window_structure", {"window_index": 0})
+    caps = _tools.dispatch(ctx, "get_capabilities", {})
+    stats = caps["tree_stats"][uid]
+    assert stats["node_count"] > 1
+    assert stats["named_node_count"] >= 5
+    assert "capture_ms" in stats and "captured_at" in stats
+
+
+def test_capabilities_stats_survive_input_invalidation(ctx, observer):
+    _, uid = _first_window(observer)
+    _tools.dispatch(ctx, "get_window_structure", {"window_index": 0})
+    _tools.dispatch(ctx, "type_text", {"text": "x"})     # invalidates cache
+    caps = _tools.dispatch(ctx, "get_capabilities", {})
+    assert uid in caps["tree_stats"]

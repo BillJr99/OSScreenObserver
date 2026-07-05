@@ -738,6 +738,20 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
     }
     if scope:
         out["scope"] = scope
+    else:
+        # Degradation signal: accessibility-dark windows (games, custom
+        # renderers) produce sparse trees — steer the agent to pixel-based
+        # fallbacks instead of letting it act on a near-empty tree.
+        named = sum(1 for e in tree.flat_list()[1:] if (e.name or "").strip())
+        threshold = int((ctx.config.get("tree", {}) or {})
+                        .get("sparse_threshold", 5))
+        if named < threshold:
+            out["degraded"] = {
+                "reason": "sparse_accessibility_tree",
+                "named_node_count": named,
+                "threshold": threshold,
+                "suggested_fallbacks": ["get_ocr", "get_screen_description"],
+            }
     return out
 
 
