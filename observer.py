@@ -394,7 +394,7 @@ class MockAdapter:
             traceback.print_exc()
             return None
 
-    def perform_action(self, action: str, element_id: str = None,
+    def perform_action(self, action: str, element_id: Optional[str] = None,
                        value: Any = None, hwnd=None) -> Dict:
         if self.scenario is not None:
             handled = self.scenario.handle_action(action=action,
@@ -533,8 +533,9 @@ class WindowsAdapter:
                         hh = rect[3] - rect[1]
                         if w > 0 and hh > 0:
                             above.append(Bounds(rect[0], rect[1], w, hh))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[occlusion] window rect probe failed "
+                                 f"for hwnd {h}: {e}")
                 try:
                     h = win32gui.GetWindow(h, GW_HWNDNEXT)
                 except Exception:
@@ -804,8 +805,9 @@ class WindowsAdapter:
                             depth + 1, max_depth, true_cond,
                             cache_request=cache_request,
                             cached=kids_cached))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[uia] child walk truncated at "
+                                 f"{elem_id}: {e}")
         return node
 
     def _walk(self, wrapper, elem_id: str, depth: int, max_depth: int) -> UIElement:
@@ -956,7 +958,8 @@ class WindowsAdapter:
             save_dc.SelectObject(save_bmp)
 
             # PW_RENDERFULLCONTENT (0x2) renders hardware-accelerated content too
-            ok = ctypes.windll.user32.PrintWindow(hwnd, save_dc.GetSafeHdc(), 2)
+            ok = ctypes.windll.user32.PrintWindow(  # type: ignore[attr-defined]
+                hwnd, save_dc.GetSafeHdc(), 2)
 
             bmpinfo = save_bmp.GetInfo()
             bmpstr = save_bmp.GetBitmapBits(True)
@@ -1004,7 +1007,7 @@ class WindowsAdapter:
                 traceback.print_exc()
                 return None
 
-    def perform_action(self, action: str, element_id: str = None,
+    def perform_action(self, action: str, element_id: Optional[str] = None,
                        value: Any = None, hwnd=None) -> Dict:
         try:
             import pyautogui
@@ -1540,7 +1543,7 @@ class ScreenObserver:
             logger.warning(f"[ScreenObserver:get_full_display_screenshot] {e}; falling back")
             return self._adapter.get_screenshot()
 
-    def perform_action(self, action: str, element_id: str = None,
+    def perform_action(self, action: str, element_id: Optional[str] = None,
                        value: Any = None, hwnd=None) -> Dict:
         return self._adapter.perform_action(action, element_id, value, hwnd)
 
@@ -1816,8 +1819,8 @@ class ScreenObserver:
         try:
             import ctypes
             import ctypes.wintypes
-            user32   = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
+            user32   = ctypes.windll.user32      # type: ignore[attr-defined]
+            kernel32 = ctypes.windll.kernel32    # type: ignore[attr-defined]
 
             # Restore if minimised (IsIconic) or hidden.
             if user32.IsIconic(hwnd):

@@ -92,7 +92,7 @@ def diagnose(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         info["error"] = (f"tesseract_cmd={cmd!r} does not exist on disk and "
                          f"is not on PATH.  {INSTALL_HINT}")
         return info
-    info["configured_path_exists"] = bool(cmd) and (
+    info["configured_path_exists"] = cmd is not None and (
         os.path.exists(cmd) or shutil.which(cmd) is not None
     )
     try:

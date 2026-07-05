@@ -329,7 +329,7 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         return _post(rest, "/api/wait_idle", body)
 
     elif tool_name == "observe_window_diff":
-        params: Dict[str, Any] = {}
+        params = {}
         if "window_uid" in args:
             params["window_uid"] = args["window_uid"]
         elif wi is not None:
@@ -414,7 +414,7 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
     # ── P3 extras ───────────────────────────────────────────────────────────
     elif tool_name == "get_screenshot_cropped":
         # Pixel data is huge — same omission policy as get_screenshot.
-        params: Dict[str, Any] = {}
+        params = {}
         if "window_uid" in args:
             params["window_uid"] = args["window_uid"]
         elif wi is not None:
@@ -429,7 +429,7 @@ def dispatch_tool(tool_name: str, args: Dict, rest: str,
         return result
 
     elif tool_name == "get_ocr":
-        params: Dict[str, Any] = {}
+        params = {}
         if "window_uid" in args:
             params["window_uid"] = args["window_uid"]
         elif wi is not None:

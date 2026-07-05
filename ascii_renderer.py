@@ -323,8 +323,8 @@ def _preprocess_image(img: "Image.Image", upscale: int) -> Tuple["Image.Image", 
     img = img.convert("L")
     try:
         img = ImageOps.autocontrast(img, cutoff=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[ocr preprocess] autocontrast skipped: {e}")
     return img, float(upscale or 1)
 
 
@@ -358,8 +358,8 @@ def _ocr_lines(screenshot_bytes: bytes,
     try:
         from ocr_util import configure as _ocr_configure
         _ocr_configure(config)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"[ocr] tesseract_cmd configure failed: {e}")
 
     ocr_cfg = (config or {}).get("ocr") or {}
     min_conf = int(ocr_cfg.get("min_confidence", 30))
@@ -442,8 +442,8 @@ def _ocr_roi_text(crop: "Image.Image", psm: int, config: Optional[dict]) -> str:
                 resample=__import__("PIL").Image.LANCZOS,
             ).convert("L")
             crop = ImageOps.autocontrast(crop, cutoff=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[ocr roi] crop preprocess skipped: {e}")
         txt = pytesseract.image_to_string(crop, config=f"--psm {psm} --oem 3")
         return " ".join(txt.split()).strip()
     except Exception:
@@ -535,8 +535,8 @@ class ASCIIRenderer:
         try:
             from ocr_util import configure as _ocr_configure
             _ocr_configure(config)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[init] tesseract_cmd configure failed: {e}")
 
     # ── public string-only API (back-compat) ─────────────────────────────────
 

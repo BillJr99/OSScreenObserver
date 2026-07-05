@@ -124,8 +124,9 @@ def _resolve_element(tree: UIElement, args: Dict[str, Any]
             result = sel.resolve(tree, parsed)
             if result.matches:
                 return result.matches[0], parsed.canonical(), None
-        except (sel.SelectorParseError, Exception):
-            pass
+        except Exception as e:
+            logger.debug(f"element_id {element_id!r} not parseable as a "
+                         f"selector either: {e}")
         # Both failed — prefer selector error if we have one (more informative).
         if selector_err:
             return None, None, selector_err
@@ -300,8 +301,10 @@ def _do_element_action(ctx: ToolContext, *, action_name: str, args: Dict[str, An
                           step_id=step_id, window_uid=info.window_uid)
 
     elem, selector_str, err = _resolve_element(tree, args)
-    if err:
-        return {**err, "step_id": step_id}
+    if err or elem is None:
+        return {**(err or error_dict(Code.ELEMENT_NOT_FOUND,
+                                     "element resolution failed")),
+                "step_id": step_id}
 
     if not elem.enabled:
         return error_dict(Code.ELEMENT_DISABLED,
@@ -327,6 +330,7 @@ def _do_element_action(ctx: ToolContext, *, action_name: str, args: Dict[str, An
         return {**confirm_check, "step_id": step_id}
 
     started = time.time()
+    executor_result: Dict[str, Any]
     if dry_run:
         executor_result = {"success": True, "dry_run": True}
     else:
@@ -347,7 +351,7 @@ def _do_element_action(ctx: ToolContext, *, action_name: str, args: Dict[str, An
                   if info_after else None)
 
     ok = bool(executor_result.get("success", True))
-    err_obj = None
+    err_obj: Optional[Dict[str, Any]] = None
     if not ok:
         err_obj = {
             "code": executor_result.get("error_code", Code.INTERNAL),
@@ -687,11 +691,12 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
                 "node_count": meta["node_count"],
                 "cache": meta["cache"],
                 "depth_used": depth}
-    serialized = tree.to_dict()
+    full_serialized = tree.to_dict()
     th = tree_hash(tree)
     if not scope:
-        token = get_session().tree_tokens.put(info.window_uid, serialized, th)
-    serialized, depth_truncated = _truncate_depth(serialized, depth)
+        token = get_session().tree_tokens.put(info.window_uid,
+                                              full_serialized, th)
+    serialized, depth_truncated = _truncate_depth(full_serialized, depth)
 
     # P3 filtering / paging --------------------------------------------------
     roles = args.get("roles")
@@ -711,7 +716,7 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
             visible_regions = []
 
     filtered = _filter_tree(
-        serialized,
+        serialized or {},
         roles=set(roles) if roles else None,
         exclude_roles=set(exclude_roles) if exclude_roles else None,
         visible_regions=visible_regions,
@@ -834,14 +839,15 @@ def _serialize_full_observation(ctx: ToolContext, info: WindowInfo,
     # Diff baselines keep the full capture; only the returned tree is
     # depth-bounded (with truncated-node markers).
     token = get_session().tree_tokens.put(info.window_uid, serialized, th)
+    out_tree: 'Optional[Dict[str, Any]]' = serialized
     depth_truncated = False
     if depth is not None:
-        serialized, depth_truncated = _truncate_depth(serialized, depth)
+        out_tree, depth_truncated = _truncate_depth(serialized, depth)
     return tree, {
         "format": "full",
         "window_uid": info.window_uid,
         "window": info.title,
-        "tree": serialized,
+        "tree": out_tree,
         "tree_hash": th,
         "tree_token": token,
         "base_token": None,
@@ -944,7 +950,7 @@ def _observe_changed_only(ctx: ToolContext, info: WindowInfo, *, depth: int,
     new_token = sess.tree_tokens.put(info.window_uid, serialized, th)
     perf = _perf_dict(meta, depth)
 
-    base = {
+    base: Dict[str, Any] = {
         "ok": True, "success": True,
         "step_id": step_id, "caused_by_step_id": caused_by,
         "window_uid": info.window_uid, "window": info.title,
@@ -1474,7 +1480,7 @@ def _apply_crop(png_bytes: bytes, bbox: Optional[Dict[str, int]],
         from PIL import Image
     except Exception:
         return png_bytes, None
-    img = Image.open(_io.BytesIO(png_bytes))
+    img: "Image.Image" = Image.open(_io.BytesIO(png_bytes))
     source_bbox: Optional[Dict[str, int]] = None
     if bbox is not None:
         x = max(0, int(bbox.get("x", 0)) - padding)
@@ -1532,7 +1538,7 @@ def get_ocr(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
                     "height": elem.bounds.height,
                 }
 
-    img = Image.open(_io.BytesIO(shot))
+    img: "Image.Image" = Image.open(_io.BytesIO(shot))
     if bbox:
         x = max(0, int(bbox.get("x", 0)))
         y = max(0, int(bbox.get("y", 0)))
@@ -1815,7 +1821,7 @@ def replay_start(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
 def replay_step(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     import replay as _replay
     step_id, caused_by = _new_step_id("replay_step")
-    rid = args.get("replay_id")
+    rid = args.get("replay_id") or ""
     rep = _REPLAYS.get(rid)
     if rep is None:
         return error_dict(Code.BAD_REQUEST, "unknown replay_id",
@@ -1833,7 +1839,7 @@ def replay_step(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
 
 def replay_status(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     step_id, caused_by = _new_step_id("replay_status")
-    rid = args.get("replay_id")
+    rid = args.get("replay_id") or ""
     rep = _REPLAYS.get(rid)
     if rep is None:
         return error_dict(Code.BAD_REQUEST, "unknown replay_id",
@@ -1961,22 +1967,28 @@ def propose_action(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id)
     elem, selector_str, err = _resolve_element(tree, inner_args)
-    if err:
-        return {**err, "step_id": step_id}
+    if err or elem is None:
+        return {**(err or error_dict(Code.ELEMENT_NOT_FOUND,
+                                     "element resolution failed")),
+                "step_id": step_id}
 
     sess = get_session()
     bbox = elem.bounds.to_dict()
     ct = sess.confirms.issue(
         action=action, window_uid=info.window_uid,
-        selector=selector_str, bbox=bbox, args=inner_args,
+        selector=selector_str or "", bbox=bbox, args=inner_args,
     )
     # Optional preview crop.
+    preview_b64 = None
     try:
         shot = ctx.observer.get_screenshot(info.handle)
-        crop_bytes, _ = _apply_crop(shot, bbox=bbox, padding=8, max_width=400)
-        preview_b64 = base64.b64encode(crop_bytes).decode() if crop_bytes else None
-    except Exception:
-        preview_b64 = None
+        if shot is not None:
+            crop_bytes, _ = _apply_crop(shot, bbox=bbox, padding=8,
+                                        max_width=400)
+            if crop_bytes:
+                preview_b64 = base64.b64encode(crop_bytes).decode()
+    except Exception as e:
+        logger.debug(f"propose_action: preview crop failed: {e}")
 
     return {
         "ok": True, "success": True,
@@ -2099,8 +2111,8 @@ def drag(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         for spec in (src, dst):
             if not (spec.get("selector") or spec.get("element_id")):
                 continue
-            elem, selector_str, err = _resolve_element(tree, spec)
-            if err or elem is None:
+            elem, selector_str, res_err = _resolve_element(tree, spec)
+            if res_err or elem is None:
                 continue
             tgt = {"window_uid": info.window_uid,
                    "element_id": elem.element_id,
@@ -2236,8 +2248,8 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
                     focused0.handle, window_uid=focused0.window_uid)
                 if t:
                     tree_before = tree_hash(t)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"trace: pre-call tree hash unavailable: {e}")
 
     try:
         result = fn(ctx, args or {})
@@ -2292,8 +2304,9 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
                             use_cache=False)
                         if t:
                             tree_after = tree_hash(t)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"trace: post-call tree hash "
+                                 f"unavailable: {e}")
                 _tracing.record(
                     sess.active_trace,
                     tool=name, caller=args.get("_caller", "unknown"),
@@ -2327,7 +2340,7 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
         try:
             sess.budgets.note(name, result)
         except Exception:
-            pass
+            logger.exception("budget accounting failed")
 
     # Audit log.
     if sess.auditor is not None:

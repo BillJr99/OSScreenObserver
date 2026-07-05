@@ -215,6 +215,7 @@ class _StepCounter:
         with self._lock:
             sid = self._next
             self._next += 1
+            caused_by: Optional[int]
             if is_input:
                 caused_by = sid
                 self._last_input_step = sid

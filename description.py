@@ -243,8 +243,8 @@ class DescriptionGenerator:
         try:
             from ocr_util import configure as _ocr_configure
             _ocr_configure(config)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[init] tesseract_cmd configure failed: {e}")
 
     # ── Accessibility tree → prose ────────────────────────────────────────────
 
@@ -537,7 +537,7 @@ class DescriptionGenerator:
                 return screenshot_bytes
             scale = max_dim / long_edge
             new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-            resized = img.resize(new_size, Image.LANCZOS)
+            resized = img.resize(new_size, Image.Resampling.LANCZOS)
             buf = io.BytesIO()
             resized.save(buf, format="PNG", optimize=True)
             return buf.getvalue()
@@ -718,11 +718,11 @@ class DescriptionGenerator:
         env["_passes"]["scene_ms"] = int((time.time() - t0) * 1000)
         scene_obj: Dict[str, Any] = {}
         if raw1:
-            scene_obj, err = _tolerant_json_loads(raw1)
-            if scene_obj is None:
-                scene_obj = {}
+            parsed1, err = _tolerant_json_loads(raw1)
+            if parsed1 is None:
                 env["_passes"]["scene_error"] = err
             else:
+                scene_obj = parsed1
                 for k in ("app", "screen_type", "primary_task"):
                     if scene_obj.get(k) is not None:
                         env[k] = scene_obj[k]
@@ -736,11 +736,11 @@ class DescriptionGenerator:
         env["_passes"]["controls_ms"] = int((time.time() - t0) * 1000)
         controls_obj: Dict[str, Any] = {}
         if raw2:
-            controls_obj, err = _tolerant_json_loads(raw2)
-            if controls_obj is None:
-                controls_obj = {}
+            parsed2, err = _tolerant_json_loads(raw2)
+            if parsed2 is None:
                 env["_passes"]["controls_error"] = err
             else:
+                controls_obj = parsed2
                 for k in ("focused", "modal_open", "controls",
                           "sensitive_regions"):
                     if controls_obj.get(k) is not None:
@@ -770,8 +770,8 @@ class DescriptionGenerator:
             tree_text = ""
             try:
                 tree_text = self.from_tree(root, window)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[vlm verify] tree grounding skipped: {e}")
             ctxv = (
                 f"<CONTROLS>\n"
                 f"{json.dumps(env.get('controls') or [], ensure_ascii=False)}\n"

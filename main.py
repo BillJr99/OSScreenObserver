@@ -135,10 +135,11 @@ def load_config(path: str) -> dict:
             print(f"\n[main:load_config] {msg}\n", file=sys.stderr)
             return dict(_DEFAULT_CONFIG)
         # Deep-merge with defaults so missing keys are always present
-        merged = dict(_DEFAULT_CONFIG)
+        merged: dict = dict(_DEFAULT_CONFIG)
         for k, v in cfg.items():
-            if isinstance(v, dict) and isinstance(merged.get(k), dict):
-                merged[k] = {**merged[k], **v}
+            base = merged.get(k)
+            if isinstance(v, dict) and isinstance(base, dict):
+                merged[k] = {**base, **v}
             else:
                 merged[k] = v
         return merged

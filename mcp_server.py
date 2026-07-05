@@ -1156,8 +1156,10 @@ class MCPServer:
                     buf2 = _io2.BytesIO()
                     full_img.crop(crop_box).save(buf2, format="PNG")
                     ocr_bytes = buf2.getvalue()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(
+                        f"[get_full_screenshot] window crop for OCR overlay "
+                        f"failed; using full image: {e}")
             sketch = self.renderer.render(
                 root             = tree,
                 screen_bounds    = ref,
@@ -1172,8 +1174,8 @@ class MCPServer:
             from PIL import Image as _Image
             _img = _Image.open(_io.BytesIO(shot))
             img_w, img_h = _img.size
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[get_full_screenshot] size probe failed: {e}")
 
         return {
             "window":           info.title if info else "(full screen)",

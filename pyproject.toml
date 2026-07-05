@@ -1,0 +1,41 @@
+# Tooling configuration (quality gates, P2).
+# Runtime packaging still goes through requirements*.txt.
+
+# ─── ruff ─────────────────────────────────────────────────────────────────────
+# Mirrors ruff's default rule set explicitly so E722 (bare `except:`) is a
+# documented, guaranteed gate — silent bare excepts must not come back.
+[tool.ruff]
+extend-exclude = ["tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]  # E7 includes E722 (bare except)
+
+# ─── mypy ─────────────────────────────────────────────────────────────────────
+# Lenient globally (large legacy surface, optional platform deps), strict-ish
+# for the small, fully-typed core modules that everything else builds on.
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_configs = true
+# Platform-specific adapters poke optional OS libraries; exclude the ones
+# that cannot even be imported on CI's platform matrix.
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+module = ["tree_cache", "errors", "session"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_return_any = true
+no_implicit_optional = true
+
+# ─── coverage ────────────────────────────────────────────────────────────────
+[tool.coverage.run]
+# Measure all source modules (even ones a given platform never imports,
+# e.g. window_agent / mac_adapter) so the CI floor has a stable basis.
+source = ["."]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+precision = 1

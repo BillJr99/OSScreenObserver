@@ -27,8 +27,14 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Lint with ruff
         run: ruff check . --exclude tests
-      - name: Run regression tests
-        run: pytest tests/ -q -m "not user" --ignore=tests/user
+      - name: Type-check with mypy
+        run: mypy .
+      - name: Run regression tests (with coverage floor)
+        # Coverage floor: measured 56% source coverage on this lane
+        # (tests/ omitted via pyproject [tool.coverage.run]); floor set
+        # 3 points below so incidental drift doesn't break CI while real
+        # regressions in test breadth do.
+        run: pytest tests/ -q -m "not user" --ignore=tests/user --cov --cov-fail-under=53
 
       - name: Run user tests (when display + tesseract present)
         run: pytest tests/user/ -q -m "user and not slow_llm and not slow_vlm and not needs_display"

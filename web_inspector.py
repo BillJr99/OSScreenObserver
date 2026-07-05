@@ -1214,7 +1214,7 @@ def create_web_app(
         return jsonify(result)
 
     def _merge_query(extra: Optional[dict] = None) -> dict:
-        out = {k: v for k, v in request.args.items()}
+        out: dict = {k: v for k, v in request.args.items()}
         if "window_index" in out:
             try:
                 out["window_index"] = int(out["window_index"])
@@ -1396,8 +1396,10 @@ def create_web_app(
                         buf2 = _io2.BytesIO()
                         full_img.crop(crop_box).save(buf2, format="PNG")
                         ocr_bytes = buf2.getvalue()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(
+                            f"[/api/full_screenshot] window crop for OCR "
+                            f"overlay failed; using full image: {e}")
                 sketch = renderer.render(
                     root             = tree,
                     screen_bounds    = ref,
