@@ -17,29 +17,37 @@ OSScreenObserver exposes a full REST API on port `5001` (configurable). Most `/a
 
 > ### Security & Network Bind Defaults
 >
-> **The default bind host is now `0.0.0.0` (all network interfaces) on port `5001`.**
-> This default is intended for **testing inside an isolated sandbox or container** (e.g., a disposable VM/dev container) where exposing the API to the container network is convenient and safe.
+> **The default bind host is `127.0.0.1` (loopback-only) on port `5001`.**
+> The REST API has **no authentication** — any client that can reach the port can call every endpoint, including `/api/action`, which can click, type, and otherwise control the host desktop. Binding to loopback by default means only processes on the same machine can reach it.
 >
-> **The REST API has NO authentication.** Any client that can reach the port can call every endpoint, including `/api/action`, which can click, type, and otherwise control the host desktop.
->
-> **For local-only use on a workstation, override the bind to loopback:**
+> **Opt-in network exposure (Docker, isolated test VMs):** pass the bind host explicitly on the command line or in config — this is the deliberate opt-in path, and startup prints a prominent warning whenever the bind is non-loopback ("unauthenticated action API exposed to the network"):
 >
 > ```bash
-> # Command-line override (recommended for local dev)
-> python main.py --mode both --host 127.0.0.1
+> # Explicit opt-in — e.g. inside a container whose port is published
+> python main.py --mode both --host 0.0.0.0
 > ```
 >
-> Or edit `config.json`:
+> Or in `config.json`:
 >
 > ```json
 > {
->   "web_ui": { "host": "127.0.0.1", "port": 5001 }
+>   "web_ui": { "host": "0.0.0.0", "port": 5001 }
 > }
 > ```
 >
-> Do **not** expose the default `0.0.0.0` bind on a workstation connected to an untrusted network (home Wi-Fi, café, corporate LAN, public cloud VM) without a firewall, reverse proxy with authentication, or VPN in front of it.
+> **Docker note:** this repo ships no Dockerfile of its own; containerized runs (e.g. the shared AutoGUI Docker harness — see "Docker harness" below) must pass `--host 0.0.0.0` (or set `web_ui.host`) explicitly so the server stays reachable through the container's published port. Nothing else changes — the opt-in flag is the only difference from a local run.
 >
-> **CORS warning:** The Flask server enables permissive CORS for all routes by default (`CORS(app)`). Any website running in the user's browser can send cross-origin requests to the API — including destructive `/api/action` calls. Restrict CORS origins or add an authentication/proxy layer before exposing the server to a multi-user environment.
+> Do **not** use a non-loopback bind on a workstation connected to an untrusted network (home Wi-Fi, café, corporate LAN, public cloud VM) without a firewall, reverse proxy with authentication, or VPN in front of it.
+>
+> **CORS:** disabled by default. The server sends no `Access-Control-Allow-Origin` headers unless `web_ui.cors_origins` is configured (default `[]`), so browsers enforce the same-origin policy — websites open in the user's browser cannot script cross-origin calls to the API, and the bundled web inspector keeps working because it is served same-origin at `/`. To allow cross-origin callers (an external dashboard, or Docker/testing scenarios), list explicit origins — or `["*"]` for anything-goes test rigs:
+>
+> ```json
+> {
+>   "web_ui": { "host": "127.0.0.1", "port": 5001, "cors_origins": ["http://localhost:3000"] }
+> }
+> ```
+>
+> Permissive CORS is never sent on `/api/action` (or any other route) by default; enabling `["*"]` re-opens the cross-origin attack surface described above, so combine it with a non-loopback bind only inside fully isolated environments.
 
 ### Startup modes
 
@@ -491,14 +499,15 @@ contains `"success": false` with an explanatory error message — the click is
 
 ## Configuration Reference (`config.json`)
 
-The following shows the built-in defaults (when no `config.json` is provided). The shipped `config.json` overrides `web_ui.host` to `127.0.0.1` for loopback-only access.
+The following shows the built-in defaults (when no `config.json` is provided).
 
 ```jsonc
 {
   "web_ui": {
-    "host":  "0.0.0.0",     // bind address; use "127.0.0.1" for loopback-only
+    "host":  "127.0.0.1",    // bind address; loopback-only by default — set "0.0.0.0" (or use --host) to opt in to network exposure (unauthenticated!)
     "port":  5001,           // HTTP port
-    "debug": false
+    "debug": false,
+    "cors_origins": []       // CORS allowlist; [] = no CORS headers (same-origin only), ["*"] = permissive (isolated test rigs only)
   },
   "mcp": {
     "server_name": "os-screen-observer",

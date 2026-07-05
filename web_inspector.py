@@ -13,6 +13,9 @@ Exposes a Flask HTTP server on localhost:5001 (configurable) with:
 
 The HTML/CSS/JS is inlined as a template string so the entire server is a
 single importable Python module with no external static files.
+
+CORS policy: no CORS headers are emitted unless web_ui.cors_origins is set
+in config (default [] = same-origin only). See create_web_app().
 """
 
 import base64
@@ -1187,7 +1190,18 @@ def create_web_app(
     shared observer/renderer/describer instances.
     """
     app = Flask(__name__)
-    CORS(app)
+
+    # CORS is opt-in (web_ui.cors_origins, default []).  With the default no
+    # Access-Control-Allow-Origin header is ever sent, so browsers enforce
+    # same-origin — the bundled inspector UI at "/" is served same-origin and
+    # keeps working.  Operators can list explicit origins, or ["*"] for
+    # Docker/testing scenarios where cross-origin dashboards need access.
+    # Never enable "*" together with a non-loopback bind outside an isolated
+    # environment: /api/action is unauthenticated and destructive.
+    cors_origins = list((config.get("web_ui") or {}).get("cors_origins") or [])
+    if cors_origins:
+        CORS(app, origins=cors_origins)
+        logger.warning(f"CORS enabled for origins: {cors_origins}")
 
     ctx = _tools.ToolContext(observer=observer, renderer=renderer,
                               describer=describer, config=config)

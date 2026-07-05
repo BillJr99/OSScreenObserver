@@ -1,11 +1,12 @@
 {
   "_about": "Copy this file to config.json and edit for your machine. config.json is in .gitignore. All sections are optional; OSScreenObserver falls back to reasonable defaults when a key is missing. Keys starting with an underscore are documentation-only and ignored at load time.",
 
-  "_web_ui": "HTTP inspector server. Bind to 127.0.0.1 unless you are deliberately exposing it to your LAN. Disable debug in shared environments.",
+  "_web_ui": "HTTP inspector server. The API is unauthenticated, so 'host' defaults to loopback (127.0.0.1); set '0.0.0.0' (or pass --host 0.0.0.0) only to deliberately expose it — e.g. inside a Docker container with a published port — and expect a startup warning. 'cors_origins' is the CORS allowlist: [] (default) sends no CORS headers so browsers enforce same-origin (the bundled inspector UI is same-origin and unaffected); list explicit origins, or [\"*\"] for isolated Docker/testing rigs. Disable debug in shared environments.",
   "web_ui": {
     "host": "127.0.0.1",
     "port": 5001,
-    "debug": false
+    "debug": false,
+    "cors_origins": []
   },
 
   "_mcp": "Identifiers reported over the MCP framing channel. Bump 'version' when you publish a breaking change to a custom fork.",
