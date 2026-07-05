@@ -1,8 +1,17 @@
 """
-redaction.py — Sensitive-region redaction (design doc §18, D7).
+redaction.py — Sensitive-region redaction (design doc §18, D7) and
+untrusted-screen-content marking (P2 trust boundary).
 
 Default: tree node names/values + OCR text + VLM preamble are scrubbed.
 Opt-in: redaction.blur_screenshots paints matched bboxes solid black.
+
+Trust boundary: everything read off the screen (window titles, element
+names/values, OCR words, VLM descriptions) is attacker-influenced data —
+a web page or document on screen can contain prompt-injection text.
+``mark_untrusted`` flags the results of screen-text-carrying tools with
+``untrusted: true`` and strips ANSI escape sequences / control characters
+so extracted text cannot smuggle terminal escapes to downstream consumers.
+MCP clients must treat these fields as data, never as instructions.
 """
 
 from __future__ import annotations
@@ -15,6 +24,72 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 DEFAULT_REPLACEMENT = "[REDACTED]"
+
+
+# ─── Untrusted screen content (P2 trust boundary) ────────────────────────────
+
+# CSI (ESC [ … cmd), OSC (ESC ] … BEL/ST), and single-char escapes.
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]"          # CSI sequences
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)?"       # OSC sequences
+    r"|[@-Z\\-_])"                            # 2-byte escapes (incl. lone ESC-x)
+)
+# C0/C1 control characters except \t \n \r (layout-preserving whitespace).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
+# Tool results that carry text extracted from the screen (window titles,
+# element names/values, OCR words, descriptions).  Their responses are
+# flagged ``untrusted: true`` and sanitized.  Action receipts also embed
+# screen-derived selectors, but flagging every action result would drown
+# the signal; perception results are where injection text actually lands.
+UNTRUSTED_RESULT_TOOLS = frozenset({
+    "list_windows",
+    "find_element",
+    "get_window_structure",
+    "observe_window",
+    "wait_for",
+    "snapshot_get",
+    "snapshot_diff",
+    "get_ocr",
+    "get_screen_description",
+})
+
+# Keys whose values are machine artifacts (base64 blobs, opaque tokens) —
+# skipped during sanitization for performance and fidelity.
+_SANITIZE_SKIP_KEYS = frozenset({
+    "data", "screenshot_b64", "tree_token", "base_token",
+    "snapshot_id", "confirm_token",
+})
+
+
+def sanitize_screen_text(text: str) -> str:
+    """Strip ANSI escape sequences and non-whitespace control characters
+    from screen-extracted text.  Idempotent; returns non-str input as-is."""
+    if not isinstance(text, str) or not text:
+        return text
+    text = _ANSI_ESCAPE_RE.sub("", text)
+    return _CONTROL_CHARS_RE.sub("", text)
+
+
+def _sanitize_value(value: Any, key: str = "") -> Any:
+    if isinstance(value, str):
+        return sanitize_screen_text(value)
+    if isinstance(value, dict):
+        return {k: (v if k in _SANITIZE_SKIP_KEYS else _sanitize_value(v, k))
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_value(v) for v in value]
+    return value
+
+
+def mark_untrusted(tool: str, result: Any) -> Any:
+    """Flag screen-text-carrying tool results as untrusted and sanitize
+    their string payloads.  No-op for tools that return no screen text."""
+    if tool not in UNTRUSTED_RESULT_TOOLS or not isinstance(result, dict):
+        return result
+    out = _sanitize_value(result)
+    out["untrusted"] = True
+    return out
 
 
 class Redactor:

@@ -27,6 +27,7 @@ from hashing import focused_selector, tree_hash
 from observer import (
     ScreenObserver, UIElement, WindowInfo, WindowResolution,
 )
+from redaction import mark_untrusted
 from session import Session, get_session
 
 logger = logging.getLogger(__name__)
@@ -371,13 +372,13 @@ def _do_element_action(ctx: ToolContext, *, action_name: str, args: Dict[str, An
     )
 
 
-def _check_confirmation(ctx: ToolContext, action_name: str,
-                        args: Dict[str, Any],
-                        target: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Returns an error dict to short-circuit when confirmation is required."""
+def _confirmation_rules_match(ctx: ToolContext,
+                              target: Dict[str, Any]) -> bool:
+    """True when any configured confirmation_required rule matches the
+    target's role/name (derived from the selector tail)."""
     confirm = ctx.config.get("confirmation_required") or []
     if not confirm:
-        return None
+        return False
     name_to_test = ""
     role_to_test = ""
     # Best-effort: derive name/role from the selector tail.
@@ -398,7 +399,14 @@ def _check_confirmation(ctx: ToolContext, action_name: str,
             return False
         return bool(rname or rrole)
 
-    if not any(_matches_rule(r) for r in confirm):
+    return any(_matches_rule(r) for r in confirm)
+
+
+def _check_confirmation(ctx: ToolContext, action_name: str,
+                        args: Dict[str, Any],
+                        target: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Returns an error dict to short-circuit when confirmation is required."""
+    if not _confirmation_rules_match(ctx, target):
         return None
 
     token = args.get("confirm_token")
@@ -2080,6 +2088,30 @@ def drag(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         return error_dict(Code.BAD_REQUEST,
                           "drag requires from/to as {x,y} or {selector|element_id}",
                           step_id=step_id)
+
+    # §21 confirmation gate: drag endpoints addressed by selector/element_id
+    # resolve to concrete elements, so a confirmation_required rule matching
+    # either endpoint (e.g. a "Trash" drop target) must demand a token, just
+    # like the other element-targeted verbs.  The first matching endpoint is
+    # validated (propose_action(action="drag", args={"selector": …}) issues
+    # the token for that endpoint's selector).
+    if tree is not None and info is not None:
+        for spec in (src, dst):
+            if not (spec.get("selector") or spec.get("element_id")):
+                continue
+            elem, selector_str, err = _resolve_element(tree, spec)
+            if err or elem is None:
+                continue
+            tgt = {"window_uid": info.window_uid,
+                   "element_id": elem.element_id,
+                   "selector": selector_str,
+                   "bounds": elem.bounds.to_dict()}
+            if _confirmation_rules_match(ctx, tgt):
+                confirm_check = _check_confirmation(ctx, "drag", args, tgt)
+                if confirm_check is not None:
+                    return {**confirm_check, "step_id": step_id}
+                break   # token validated for the matching endpoint
+
     duration = float(args.get("duration_s", 0.5))
     path = [p1, ((p1[0] + p2[0]) // 2, (p1[1] + p2[1]) // 2), p2]
     try:
@@ -2281,6 +2313,14 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
             result = _apply_redaction(name, result, sess.redactor)
         except Exception:
             logger.exception("redaction failed")
+
+    # Untrusted-content marking (always on): screen-derived text is
+    # attacker-influenced data (prompt injection), never instructions.
+    # Flag it and strip ANSI/control characters.
+    try:
+        result = mark_untrusted(name, result)
+    except Exception:
+        logger.exception("untrusted-content marking failed")
 
     # Budget accounting.
     if sess.budgets is not None:
