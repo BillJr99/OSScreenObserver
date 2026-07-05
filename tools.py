@@ -647,25 +647,38 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
 
     depth = _effective_depth(ctx, args)
     scope = args.get("scope")
+    token = None
 
     if scope:
         # Drill into one branch only (element-id path, e.g. 'root.3.2').
+        ttl = float((ctx.config.get("tree", {}) or {}).get("cache_ttl_s", 2.0))
+        had_fresh_entry = (get_session().tree_cache.get(
+            info.window_uid, ttl_s=ttl) is not None)
+        started = time.time()
         tree = ctx.observer.get_element_subtree(
             info.handle, scope, max_depth=depth,
             window_uid=info.window_uid)
+        capture_ms = int((time.time() - started) * 1000)
         if tree is None:
             return error_dict(Code.ELEMENT_NOT_FOUND,
                               f"no element with id {scope!r} to scope to",
                               step_id=step_id, scope=scope,
                               window_uid=info.window_uid)
-        token = None   # scoped captures are not valid diff baselines
+        perf = {"capture_ms": capture_ms,
+                "node_count": len(tree.flat_list()),
+                "cache": "hit" if had_fresh_entry else "miss",
+                "depth_used": depth}
+        # scoped captures are not valid diff baselines → no tree_token
     else:
-        tree = ctx.observer.get_element_tree(info.handle,
-                                             window_uid=info.window_uid)
+        tree, meta = ctx.observer.get_element_tree_with_meta(
+            info.handle, window_uid=info.window_uid)
         if tree is None:
             return error_dict(Code.INTERNAL, "could not retrieve element tree",
                               step_id=step_id, window_uid=info.window_uid)
-        token = None
+        perf = {"capture_ms": meta["capture_ms"],
+                "node_count": meta["node_count"],
+                "cache": meta["cache"],
+                "depth_used": depth}
     serialized = tree.to_dict()
     th = tree_hash(tree)
     if not scope:
@@ -721,6 +734,7 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
         "next_cursor": next_cursor,
         "depth_used": depth,
         "depth_truncated": depth_truncated,
+        "perf": perf,
     }
     if scope:
         out["scope"] = scope
@@ -779,11 +793,18 @@ def get_visible_areas(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
 
 # ─── P2: observe-with-diff, snapshots, wait_for, composites ──────────────────
 
+def _perf_dict(meta: Dict[str, Any], depth: Optional[int]) -> Dict[str, Any]:
+    return {"capture_ms": meta["capture_ms"],
+            "node_count": meta["node_count"],
+            "cache": meta["cache"],
+            "depth_used": depth}
+
+
 def _serialize_full_observation(ctx: ToolContext, info: WindowInfo,
                                 depth: Optional[int] = None,
                                  ) -> Tuple[Optional[UIElement], Dict[str, Any]]:
-    tree = ctx.observer.get_element_tree(info.handle,
-                                         window_uid=info.window_uid)
+    tree, meta = ctx.observer.get_element_tree_with_meta(
+        info.handle, window_uid=info.window_uid)
     if tree is None:
         return None, {"error": "no tree"}
     serialized = tree.to_dict()
@@ -804,6 +825,7 @@ def _serialize_full_observation(ctx: ToolContext, info: WindowInfo,
         "base_token": None,
         "depth_used": depth,
         "depth_truncated": depth_truncated,
+        "perf": _perf_dict(meta, depth),
     }
 
 
@@ -819,6 +841,11 @@ def observe_window(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     since = args.get("since")
     fmt = args.get("format", "custom")
     depth = _effective_depth(ctx, args)
+    changed_only = bool(args.get("changed_only"))
+
+    if not since and changed_only:
+        return _observe_changed_only(ctx, info, depth=depth,
+                                     step_id=step_id, caused_by=caused_by)
 
     if not since:
         _, full = _serialize_full_observation(ctx, info, depth=depth)
@@ -828,8 +855,8 @@ def observe_window(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         return full
 
     entry = get_session().tree_tokens.get(since)
-    tree = ctx.observer.get_element_tree(info.handle,
-                                         window_uid=info.window_uid)
+    tree, meta = ctx.observer.get_element_tree_with_meta(
+        info.handle, window_uid=info.window_uid)
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id, window_uid=info.window_uid)
@@ -849,6 +876,7 @@ def observe_window(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
             "format": "full",
             "depth_used": depth,
             "depth_truncated": depth_truncated,
+            "perf": _perf_dict(meta, depth),
         }
 
     if fmt == "json-patch":
@@ -867,7 +895,56 @@ def observe_window(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         "changes": changes,
         "unchanged": len(changes) == 0,
         "tree_hash": th,
+        "perf": _perf_dict(meta, depth),
     }
+
+
+def _observe_changed_only(ctx: ToolContext, info: WindowInfo, *, depth: int,
+                          step_id: int, caused_by: Optional[int]
+                          ) -> Dict[str, Any]:
+    """observe_window changed_only=true: compare a fresh capture against the
+    last cached capture of the window.  Unchanged → a tiny
+    {unchanged: true, tree_hash} response; changed → a custom diff instead
+    of the full tree; no baseline → full tree."""
+    from diff import diff_custom
+    sess = get_session()
+    # Baseline: the most recent capture, regardless of cache TTL.
+    baseline = sess.tree_cache.peek(info.window_uid)
+
+    # Fresh capture (bypass the cache — the whole point is to detect drift).
+    tree, meta = ctx.observer.get_element_tree_with_meta(
+        info.handle, window_uid=info.window_uid, use_cache=False)
+    if tree is None:
+        return error_dict(Code.INTERNAL, "could not retrieve element tree",
+                          step_id=step_id, window_uid=info.window_uid)
+    serialized = tree.to_dict()
+    th = tree_hash(tree)
+    new_token = sess.tree_tokens.put(info.window_uid, serialized, th)
+    perf = _perf_dict(meta, depth)
+
+    base = {
+        "ok": True, "success": True,
+        "step_id": step_id, "caused_by_step_id": caused_by,
+        "window_uid": info.window_uid, "window": info.title,
+        "tree_hash": th, "tree_token": new_token,
+        "changed_only": True,
+        "perf": perf,
+    }
+
+    if baseline is None:
+        # Nothing to compare against — return the (depth-bounded) full tree.
+        out_tree, depth_truncated = _truncate_depth(serialized, depth)
+        base.update({"format": "full", "tree": out_tree, "base_token": None,
+                     "depth_used": depth, "depth_truncated": depth_truncated})
+        return base
+
+    if baseline.tree_hash == th:
+        base["unchanged"] = True
+        return base
+
+    changes = diff_custom(baseline.serialized, serialized)
+    base.update({"format": "custom", "changes": changes, "unchanged": False})
+    return base
 
 
 def snapshot(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:

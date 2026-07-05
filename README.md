@@ -417,6 +417,7 @@ The web inspector exposes the following endpoints (all `GET` unless noted):
 |----------|--------|-------------|
 | `GET /api/windows` | — | List all visible windows |
 | `GET /api/structure` | `window_index`, `depth`, `scope` | Accessibility element tree (JSON). Returned to `tree.default_depth` levels by default; deeper branches carry `truncated: true` + `child_count` — drill in with `scope=<element_id>` and/or a larger `depth` (capped at `tree.max_depth`) |
+| `GET /api/observe` | `window_index`/`window_uid`, `since`, `changed_only`, `depth` | Tree observation. `since=<tree_token>` returns a diff against that baseline; `changed_only=1` compares against the window's last capture and returns a tiny `{unchanged: true}` or a diff instead of the full tree. Responses include `perf` (`capture_ms`, `node_count`, `cache` hit/miss/bypass, `depth_used`) |
 | `GET /api/description` | `window_index` | Combined description (accessibility + OCR + VLM, whatever is available). `mode` query parameter is accepted but ignored — always returns combined output. |
 | `GET /api/sketch` | `window_index`, `grid_width`, `grid_height`, `ocr` | ASCII layout sketch |
 | `GET /api/screenshot` | `window_index` | Screenshot as base64 PNG |

@@ -1518,6 +1518,9 @@ def create_web_app(
                 args["depth"] = int(args["depth"])
             except (TypeError, ValueError):
                 args.pop("depth", None)
+        if "changed_only" in args:
+            args["changed_only"] = str(args["changed_only"]).lower() in (
+                "1", "true", "yes")
         return _tool_response("observe_window", args)
 
     @app.route("/api/snapshot", methods=["POST"])

@@ -455,7 +455,11 @@ _TOOLS: List[Dict] = [
             "tree_token from a previous observation as 'since' to get only "
             "what changed (custom diff format by default; pass "
             "format='json-patch' for RFC 6902).  An expired token returns the "
-            "full tree with base_token=null."
+            "full tree with base_token=null.  Alternatively pass "
+            "changed_only=true (no since needed) to compare against the "
+            "window's last capture: unchanged windows return a tiny "
+            "{unchanged: true, tree_hash} response, changed windows return a "
+            "diff instead of the full tree."
         ),
         "inputSchema": {
             "type": "object",
@@ -466,6 +470,8 @@ _TOOLS: List[Dict] = [
                 "format":       {"type": "string", "enum": ["custom", "json-patch"]},
                 "depth":        {"type": "integer",
                                  "description": "Tree depth for full-format responses (default tree.default_depth, capped at tree.max_depth)."},
+                "changed_only": {"type": "boolean",
+                                 "description": "Compare against the window's last capture; returns {unchanged:true} or a diff instead of the full tree."},
             },
             "required": [],
         },
