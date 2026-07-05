@@ -523,7 +523,8 @@ The following shows the built-in defaults (when no `config.json` is provided). T
   "tree": {
     "max_depth": 8,            // hard cap on traversal depth
     "default_depth": 5,        // depth returned when no depth= is requested (drill in via scope=)
-    "cache_ttl_s": 2.0         // per-window tree cache TTL; input actions invalidate automatically
+    "cache_ttl_s": 2.0,        // per-window tree cache TTL; input actions invalidate automatically
+    "strategy": "merged"       // Windows capture pipeline: "merged" (UIA + pywinauto) or "uia_only" (faster)
   },
   "logging": {
     "level": "INFO"            // DEBUG / INFO / WARNING / ERROR

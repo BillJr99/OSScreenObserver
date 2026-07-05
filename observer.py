@@ -430,6 +430,7 @@ _UIA_TYPE_TO_ROLE: Dict[int, str] = {
 }
 
 # UIA property IDs (UIAutomationClient.h) used by the raw-COM walker.
+_UIA_BOUNDING_RECT   = 30001
 _UIA_NAME            = 30005
 _UIA_CTRL_TYPE       = 30003
 _UIA_ENABLED         = 30010
@@ -445,6 +446,15 @@ _UIA_RANGE_MAX       = 30050
 _UIA_IS_SELECTED     = 30079
 _UIA_EXPAND_STATE    = 30084   # 0=collapsed 1=expanded 2=partial 3=leaf
 _UIA_SCOPE_CHILDREN  = 0x2
+
+# Properties bulk-fetched via a UIA CacheRequest so each level of the walk is
+# one COM round trip (FindAllBuildCache) instead of ~15 per node.
+_UIA_CACHED_PROPS = (
+    _UIA_BOUNDING_RECT, _UIA_NAME, _UIA_CTRL_TYPE, _UIA_ENABLED,
+    _UIA_FOCUSED, _UIA_VALUE, _UIA_ACCESS_KEY, _UIA_ACCEL_KEY,
+    _UIA_HELP_TEXT, _UIA_AUTOMATION_ID, _UIA_RANGE_VALUE, _UIA_RANGE_MIN,
+    _UIA_RANGE_MAX, _UIA_IS_SELECTED, _UIA_EXPAND_STATE,
+)
 
 
 # Windows Adapter  (requires: pywinauto, pywin32, psutil)
@@ -546,7 +556,14 @@ class WindowsAdapter:
         # Run both walkers and synthesise: UIA crosses Chromium fragment boundaries
         # (gets web content); pywinauto may surface native-control properties that
         # UIA omits.  The merged result gives the LLM everything either source sees.
+        # tree.strategy == "uia_only" skips the second pywinauto walk and the
+        # synthesis pass entirely — roughly halving capture time — at the cost
+        # of the extra native-control properties the merge would contribute.
+        strategy = str(self.config.get("tree", {}).get("strategy",
+                                                       "merged")).lower()
         uia_tree = self._uia_walk(hwnd)
+        if strategy == "uia_only" and uia_tree is not None:
+            return uia_tree
         pw_tree  = None
         try:
             app = self._Application(backend="uia").connect(handle=hwnd)
@@ -599,7 +616,8 @@ class WindowsAdapter:
                     elem = kids.GetElement(idx)
                 if elem is not None:
                     return self._uia_walk_element(
-                        elem, element_path, 0, max_depth, true_cond)
+                        elem, element_path, 0, max_depth, true_cond,
+                        cache_request=self._uia_cache_request(raw_uia))
             except Exception as e:
                 logger.debug(f"[WindowsAdapter:get_element_subtree] "
                              f"navigation failed ({e}); falling back")
@@ -638,51 +656,106 @@ class WindowsAdapter:
         elements (e.g. Chrome_RenderWidgetHostHWND), missing all web content.
         Using FindAll(TreeScope_Children) directly on the IUIAutomationElement
         always uses UIA and correctly crosses Chromium fragment boundaries.
+
+        When the COM API supports it, a CacheRequest bulk-fetches the walked
+        properties per level (FindAllBuildCache + GetCachedPropertyValue) —
+        one cross-process round trip per node's children instead of ~15 per
+        node.  Any CacheRequest failure falls back to the per-property path.
         """
         try:
             raw_uia, true_cond = self._uia_handles()
             root = raw_uia.ElementFromHandle(hwnd)
             max_depth = self.config.get("tree", {}).get("max_depth", 8)
-            return self._uia_walk_element(root, "root", 0, max_depth, true_cond)
+            cache_request = self._uia_cache_request(raw_uia)
+            return self._uia_walk_element(root, "root", 0, max_depth,
+                                          true_cond,
+                                          cache_request=cache_request)
         except Exception as e:
             logger.debug(f"[WindowsAdapter:_uia_walk] {e}")
             return None
 
     @staticmethod
-    def _uia_prop(elem, pid, default=None):
+    def _uia_cache_request(raw_uia):
+        """Build a CacheRequest covering the properties the walker reads.
+        Returns None (per-property fallback) when construction fails."""
+        try:
+            cr = raw_uia.CreateCacheRequest()
+            for pid in _UIA_CACHED_PROPS:
+                cr.AddProperty(pid)
+            return cr
+        except Exception as e:
+            logger.debug(f"[WindowsAdapter:_uia_cache_request] CacheRequest "
+                         f"unavailable ({e}); using per-property fetches")
+            return None
+
+    @staticmethod
+    def _uia_prop(elem, pid, default=None, cached=False):
+        if cached:
+            try:
+                v = elem.GetCachedPropertyValue(pid)
+                return v if v is not None else default
+            except Exception:
+                pass    # cache miss/failure — fall back to a live fetch
         try:
             v = elem.GetCurrentPropertyValue(pid)
             return v if v is not None else default
         except Exception:
             return default
 
-    def _uia_walk_element(self, elem, elem_id: str, depth: int,
-                          max_depth: int, true_cond) -> UIElement:
-        _prop = self._uia_prop
-        name = _prop(elem, _UIA_NAME, "") or ""
-        ctrl = _prop(elem, _UIA_CTRL_TYPE, 0) or 0
-        role = _UIA_TYPE_TO_ROLE.get(ctrl, "Pane")
+    @staticmethod
+    def _uia_bounds(elem, cached=False) -> Bounds:
+        if cached:
+            try:
+                r = elem.CachedBoundingRectangle
+                return Bounds(r.left, r.top,
+                              r.right - r.left, r.bottom - r.top)
+            except Exception:
+                try:
+                    arr = elem.GetCachedPropertyValue(_UIA_BOUNDING_RECT)
+                    if arr is not None and len(arr) == 4:
+                        # VT_R8 SAFEARRAY: [left, top, width, height]
+                        return Bounds(int(arr[0]), int(arr[1]),
+                                      int(arr[2]), int(arr[3]))
+                except Exception:
+                    pass
         try:
             r = elem.CurrentBoundingRectangle
-            bounds = Bounds(r.left, r.top, r.right - r.left, r.bottom - r.top)
+            return Bounds(r.left, r.top, r.right - r.left, r.bottom - r.top)
         except Exception:
-            bounds = Bounds(0, 0, 0, 0)
-        enabled = bool(_prop(elem, _UIA_ENABLED, True))
-        focused = bool(_prop(elem, _UIA_FOCUSED, False))
-        value   = _prop(elem, _UIA_VALUE) or None
+            return Bounds(0, 0, 0, 0)
+
+    def _uia_walk_element(self, elem, elem_id: str, depth: int,
+                          max_depth: int, true_cond,
+                          cache_request=None, cached: bool = False
+                          ) -> UIElement:
+        """Build a UIElement for *elem* and recurse into its children.
+
+        *cached* means this element was fetched via FindAllBuildCache and its
+        properties can be read with GetCachedPropertyValue (no round trip).
+        """
+        def _prop(pid, default=None):
+            return self._uia_prop(elem, pid, default, cached=cached)
+
+        name = _prop(_UIA_NAME, "") or ""
+        ctrl = _prop(_UIA_CTRL_TYPE, 0) or 0
+        role = _UIA_TYPE_TO_ROLE.get(ctrl, "Pane")
+        bounds = self._uia_bounds(elem, cached=cached)
+        enabled = bool(_prop(_UIA_ENABLED, True))
+        focused = bool(_prop(_UIA_FOCUSED, False))
+        value   = _prop(_UIA_VALUE) or None
         # Keyboard shortcut: prefer access key, fall back to accelerator.
-        ks = _prop(elem, _UIA_ACCESS_KEY) or _prop(elem, _UIA_ACCEL_KEY) or None
-        desc = _prop(elem, _UIA_HELP_TEXT) or None
-        aid = _prop(elem, _UIA_AUTOMATION_ID) or None
+        ks = _prop(_UIA_ACCESS_KEY) or _prop(_UIA_ACCEL_KEY) or None
+        desc = _prop(_UIA_HELP_TEXT) or None
+        aid = _prop(_UIA_AUTOMATION_ID) or None
         # RangeValue pattern: slider / progress / scrollbar
-        vn = _prop(elem, _UIA_RANGE_VALUE)
-        vmin = _prop(elem, _UIA_RANGE_MIN)
-        vmax = _prop(elem, _UIA_RANGE_MAX)
+        vn = _prop(_UIA_RANGE_VALUE)
+        vmin = _prop(_UIA_RANGE_MIN)
+        vmax = _prop(_UIA_RANGE_MAX)
         # SelectionItem.IsSelected: checkbox / radio / tab / menuitem
-        sel_raw = _prop(elem, _UIA_IS_SELECTED)
+        sel_raw = _prop(_UIA_IS_SELECTED)
         sel = bool(sel_raw) if sel_raw is not None else None
         # ExpandCollapse: combobox / treeitem / menuitem
-        exp_raw = _prop(elem, _UIA_EXPAND_STATE)
+        exp_raw = _prop(_UIA_EXPAND_STATE)
         if exp_raw in (0, 1):
             exp = bool(exp_raw)
         else:
@@ -709,14 +782,30 @@ class WindowsAdapter:
             identifier=str(aid) if aid else None,
         )
         if depth < max_depth:
-            try:
-                kids = elem.FindAll(_UIA_SCOPE_CHILDREN, true_cond)
-                for i in range(kids.Length):
-                    node.children.append(self._uia_walk_element(
-                        kids.GetElement(i), f"{elem_id}.{i}",
-                        depth + 1, max_depth, true_cond))
-            except Exception:
-                pass
+            kids = None
+            kids_cached = False
+            if cache_request is not None:
+                try:
+                    kids = elem.FindAllBuildCache(_UIA_SCOPE_CHILDREN,
+                                                  true_cond, cache_request)
+                    kids_cached = True
+                except Exception:
+                    kids = None     # per-node fallback below
+            if kids is None:
+                try:
+                    kids = elem.FindAll(_UIA_SCOPE_CHILDREN, true_cond)
+                except Exception:
+                    kids = None
+            if kids is not None:
+                try:
+                    for i in range(kids.Length):
+                        node.children.append(self._uia_walk_element(
+                            kids.GetElement(i), f"{elem_id}.{i}",
+                            depth + 1, max_depth, true_cond,
+                            cache_request=cache_request,
+                            cached=kids_cached))
+                except Exception:
+                    pass
         return node
 
     def _walk(self, wrapper, elem_id: str, depth: int, max_depth: int) -> UIElement:
