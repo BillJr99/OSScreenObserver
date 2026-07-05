@@ -204,7 +204,8 @@ def find_element(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     if info is None:
         return error_dict(Code.WINDOW_GONE, "no windows available",
                           step_id=step_id)
-    tree = ctx.observer.get_element_tree(info.handle)
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid)
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id, window_uid=info.window_uid)
@@ -291,7 +292,8 @@ def _do_element_action(ctx: ToolContext, *, action_name: str, args: Dict[str, An
     if info is None:
         return error_dict(Code.WINDOW_GONE, "no windows available",
                           step_id=step_id)
-    tree = ctx.observer.get_element_tree(info.handle)
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid)
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id, window_uid=info.window_uid)
@@ -336,7 +338,11 @@ def _do_element_action(ctx: ToolContext, *, action_name: str, args: Dict[str, An
     duration_ms = int((time.time() - started) * 1000)
     after_windows = ctx.observer.list_windows()
     info_after = ctx.observer.window_by_uid(after_windows, info.window_uid)
-    after_tree = (ctx.observer.get_element_tree(info_after.handle)
+    # Post-action re-read must bypass the tree cache so the receipt's
+    # after-state reflects reality (the fresh capture refreshes the cache).
+    after_tree = (ctx.observer.get_element_tree(info_after.handle,
+                                                window_uid=info_after.window_uid,
+                                                use_cache=False)
                   if info_after else None)
 
     ok = bool(executor_result.get("success", True))
@@ -517,8 +523,11 @@ def select_option(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
                    "button": "left", "double": False},
             hwnd=info.handle,
         )
-        # Re-walk to see the now-visible option list.
-        new_tree = ctx.observer.get_element_tree(info.handle)
+        # Re-walk to see the now-visible option list (bypass the cache —
+        # the click above just changed the UI).
+        new_tree = ctx.observer.get_element_tree(info.handle,
+                                                 window_uid=info.window_uid,
+                                                 use_cache=False)
         target: Optional[UIElement] = None
         if new_tree is not None:
             descendants = []
@@ -592,7 +601,8 @@ def get_window_structure(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, An
     if info is None:
         return error_dict(Code.WINDOW_GONE, "no windows available",
                           step_id=step_id)
-    tree = ctx.observer.get_element_tree(info.handle)
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid)
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id, window_uid=info.window_uid)
@@ -704,7 +714,8 @@ def get_visible_areas(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
 
 def _serialize_full_observation(ctx: ToolContext, info: WindowInfo,
                                  ) -> Tuple[Optional[UIElement], Dict[str, Any]]:
-    tree = ctx.observer.get_element_tree(info.handle)
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid)
     if tree is None:
         return None, {"error": "no tree"}
     serialized = tree.to_dict()
@@ -741,7 +752,8 @@ def observe_window(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
         return full
 
     entry = get_session().tree_tokens.get(since)
-    tree = ctx.observer.get_element_tree(info.handle)
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid)
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id, window_uid=info.window_uid)
@@ -786,7 +798,8 @@ def snapshot(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     hashes: Dict[str, str] = {}
     for w in windows:
         try:
-            t = ctx.observer.get_element_tree(w.handle)
+            t = ctx.observer.get_element_tree(w.handle,
+                                              window_uid=w.window_uid)
             if t is not None and w.window_uid:
                 trees[w.window_uid] = t.to_dict()
                 hashes[w.window_uid] = tree_hash(t)
@@ -907,12 +920,17 @@ def _check_condition(ctx: ToolContext, cond: Dict[str, Any],
         entry = sess.tree_tokens.get(token) if token else None
         if entry is None or info is None:
             return False, {}
-        tree = ctx.observer.get_element_tree(info.handle)
+        tree = ctx.observer.get_element_tree(info.handle,
+                                             window_uid=info.window_uid,
+                                             use_cache=False)
         return tree is not None and tree_hash(tree) != entry.tree_hash, {}
 
     if info is None:
         return False, {}
-    tree = ctx.observer.get_element_tree(info.handle)
+    # Polling must observe fresh state — bypass the tree cache.
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid,
+                                         use_cache=False)
     if tree is None:
         return False, {}
 
@@ -1009,7 +1027,9 @@ def wait_idle(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     last_hash = None
     last_change_at = time.time()
     while (time.time() - started) * 1000 < timeout_ms:
-        tree = ctx.observer.get_element_tree(info.handle)
+        tree = ctx.observer.get_element_tree(info.handle,
+                                             window_uid=info.window_uid,
+                                             use_cache=False)
         if tree is None:
             time.sleep(poll_ms / 1000.0)
             continue
@@ -1238,7 +1258,8 @@ def get_screenshot_cropped(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
     max_width: Optional[int] = args.get("max_width")
 
     if bbox is None and element_id and info is not None:
-        tree = ctx.observer.get_element_tree(info.handle)
+        tree = ctx.observer.get_element_tree(info.handle,
+                                             window_uid=info.window_uid)
         if tree is not None:
             elem = _find_by_id(tree, element_id)
             if elem is not None:
@@ -1321,7 +1342,8 @@ def get_ocr(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     bbox = args.get("bbox")
     element_id = args.get("element_id")
     if element_id and not bbox:
-        tree = ctx.observer.get_element_tree(info.handle)
+        tree = ctx.observer.get_element_tree(info.handle,
+                                             window_uid=info.window_uid)
         if tree is not None:
             elem = _find_by_id(tree, element_id)
             if elem is not None:
@@ -1388,7 +1410,8 @@ def get_screen_description(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, 
     if info is None:
         return error_dict(Code.WINDOW_GONE, "no windows available",
                           step_id=step_id)
-    tree = ctx.observer.get_element_tree(info.handle)
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid)
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id)
@@ -1673,6 +1696,8 @@ def load_scenario(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     try:
         sc = _scn.load(path)
         _scn.attach_to_observer(sc, ctx.observer)
+        # The scenario replaces the mock world — cached trees are stale.
+        get_session().tree_cache.invalidate_all()
     except _scn.ScenarioError as e:
         return error_dict(Code.SCENARIO_INVALID, str(e),
                           step_id=step_id, path=path)
@@ -1752,7 +1777,8 @@ def propose_action(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     if info is None:
         return error_dict(Code.WINDOW_GONE, "no windows available",
                           step_id=step_id)
-    tree = ctx.observer.get_element_tree(info.handle)
+    tree = ctx.observer.get_element_tree(info.handle,
+                                         window_uid=info.window_uid)
     if tree is None:
         return error_dict(Code.INTERNAL, "could not retrieve element tree",
                           step_id=step_id)
@@ -1853,7 +1879,9 @@ def drag(ctx: ToolContext, args: Dict[str, Any]) -> Dict[str, Any]:
     # Resolve element references on either end.
     windows, res = _resolve_window(ctx, args)
     info = res.info or _focused_window(windows)
-    tree = ctx.observer.get_element_tree(info.handle) if info else None
+    tree = (ctx.observer.get_element_tree(info.handle,
+                                          window_uid=info.window_uid)
+            if info else None)
 
     def _to_xy(spec: Dict[str, Any]) -> Optional[Tuple[int, int]]:
         if "x" in spec and "y" in spec:
@@ -2002,7 +2030,8 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
             windows0 = ctx.observer.list_windows()
             focused0 = next((w for w in windows0 if w.is_focused), None)
             if focused0:
-                t = ctx.observer.get_element_tree(focused0.handle)
+                t = ctx.observer.get_element_tree(
+                    focused0.handle, window_uid=focused0.window_uid)
                 if t:
                     tree_before = tree_hash(t)
         except Exception:
@@ -2015,6 +2044,24 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
         result = error_dict(Code.INTERNAL, f"{type(e).__name__}: {e}")
 
     duration_ms = int((time.time() - started) * 1000)
+
+    # P1 tree cache invalidation — the single choke point.  After any input
+    # tool (including bring_to_foreground) the affected window's cached tree
+    # is stale; drop it so subsequent reads re-walk.  When the target window
+    # cannot be determined (legacy coordinate tools), drop everything.
+    if _is_input_tool(name):
+        try:
+            uid = None
+            if isinstance(result, dict):
+                uid = ((result.get("target") or {}).get("window_uid")
+                       or result.get("window_uid"))
+            uid = uid or (args or {}).get("window_uid")
+            if uid:
+                sess.tree_cache.invalidate(uid)
+            else:
+                sess.tree_cache.invalidate_all()
+        except Exception:
+            logger.exception("tree cache invalidation failed")
 
     # Recurse-safety: don't trace meta tools that would recurse forever.
     if name not in {"trace_start", "trace_stop", "trace_status",
@@ -2038,7 +2085,9 @@ def dispatch(ctx: ToolContext, name: str, args: Dict[str, Any]) -> Dict[str, Any
                     after_w = ctx.observer.list_windows()
                     f = next((w for w in after_w if w.is_focused), None)
                     if f:
-                        t = ctx.observer.get_element_tree(f.handle)
+                        t = ctx.observer.get_element_tree(
+                            f.handle, window_uid=f.window_uid,
+                            use_cache=False)
                         if t:
                             tree_after = tree_hash(t)
                 except Exception:

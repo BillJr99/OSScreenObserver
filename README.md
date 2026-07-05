@@ -521,7 +521,8 @@ The following shows the built-in defaults (when no `config.json` is provided). T
     "unicode_box": true        // false → plain ASCII +/-/| instead of ┌─┐│└┘
   },
   "tree": {
-    "max_depth": 8             // maximum depth to traverse (Windows only)
+    "max_depth": 8,            // hard cap on traversal depth
+    "cache_ttl_s": 2.0         // per-window tree cache TTL; input actions invalidate automatically
   },
   "logging": {
     "level": "INFO"            // DEBUG / INFO / WARNING / ERROR

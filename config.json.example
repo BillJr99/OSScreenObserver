@@ -79,9 +79,10 @@
     "vlm_fallback": false
   },
 
-  "_tree": "Accessibility-tree walk limits. 'max_depth' caps recursion so pathological apps (web views with deep DOMs) cannot blow up tree retrieval. Raise it if your target app legitimately nests deeper.",
+  "_tree": "Accessibility-tree walk limits. 'max_depth' caps recursion so pathological apps (web views with deep DOMs) cannot blow up tree retrieval. Raise it if your target app legitimately nests deeper. 'cache_ttl_s' controls the per-window tree cache: read-only tools reuse the last capture for this many seconds instead of re-walking the tree (input actions invalidate the cache automatically); set 0 to disable reuse.",
   "tree": {
-    "max_depth": 8
+    "max_depth": 8,
+    "cache_ttl_s": 2.0
   },
 
   "_logging": "Python logging level for the OSScreenObserver loggers. Use DEBUG to trace adapter behavior, WARNING to silence routine info.",

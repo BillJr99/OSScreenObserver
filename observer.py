@@ -17,9 +17,10 @@ import io
 import logging
 import os
 import platform
+import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,12 @@ class MockAdapter:
         # --scenario is supplied; methods route through the scenario when
         # active so that input actions can drive state transitions.
         self.scenario: Optional[Any] = None
+        # Test hooks (P1 perf work): capture_count increments on every tree
+        # walk so tests can assert cache hits avoided adapter work;
+        # tree_mutator, when set, post-processes (or replaces) each captured
+        # tree so tests can simulate UI changes between captures.
+        self.capture_count: int = 0
+        self.tree_mutator: Optional[Callable[[UIElement], UIElement]] = None
 
     def get_windows_above_bounds(self, hwnd) -> List["Bounds"]:
         return []  # Mock assumes the target window is on top
@@ -211,6 +218,15 @@ class MockAdapter:
         ]
 
     def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
+        self.capture_count += 1
+        tree = self._build_tree(hwnd)
+        if tree is not None and self.tree_mutator is not None:
+            mutated = self.tree_mutator(tree)
+            if mutated is not None:
+                tree = mutated
+        return tree
+
+    def _build_tree(self, hwnd=None) -> Optional[UIElement]:
         if self.scenario is not None:
             return self.scenario.get_element_tree(hwnd)
         root = UIElement("root", "Untitled — Notepad", "Window",
@@ -1173,8 +1189,79 @@ class ScreenObserver:
     def list_windows(self) -> List[WindowInfo]:
         return self._adapter.list_windows()
 
-    def get_element_tree(self, hwnd=None) -> Optional[UIElement]:
-        return self._adapter.get_element_tree(hwnd)
+    def get_element_tree(self, hwnd=None, window_uid: Optional[str] = None,
+                         use_cache: bool = True) -> Optional[UIElement]:
+        """Return the accessibility tree for a window.
+
+        When *window_uid* is supplied the per-window tree cache is consulted:
+        a fresh cached capture (within ``tree.cache_ttl_s``) is returned
+        without walking the adapter; a miss walks and stores.  Pass
+        ``use_cache=False`` to force a fresh walk (post-action re-reads);
+        the fresh capture still refreshes the cache.  Calls without a
+        *window_uid* always walk and are never cached.
+        """
+        tree, _meta = self.get_element_tree_with_meta(
+            hwnd, window_uid=window_uid, use_cache=use_cache)
+        return tree
+
+    def get_element_tree_with_meta(
+            self, hwnd=None, *, window_uid: Optional[str] = None,
+            use_cache: bool = True,
+    ) -> Tuple[Optional[UIElement], Dict[str, Any]]:
+        """get_element_tree plus capture metadata.
+
+        Returns (tree, meta) where meta is
+        ``{"cache": "hit"|"miss"|"bypass", "capture_ms": int,
+        "node_count": int}``.
+        """
+        tree_cfg = self.config.get("tree", {}) or {}
+        ttl = float(tree_cfg.get("cache_ttl_s", 2.0))
+        cache = self._tree_cache()
+
+        if use_cache and window_uid and cache is not None:
+            entry = cache.get(window_uid, ttl_s=ttl)
+            if entry is not None:
+                return entry.tree, {
+                    "cache": "hit",
+                    "capture_ms": 0,
+                    "node_count": entry.node_count,
+                }
+
+        started = time.time()
+        tree = self._adapter.get_element_tree(hwnd)
+        capture_ms = int((time.time() - started) * 1000)
+        node_count = len(tree.flat_list()) if tree is not None else 0
+
+        if tree is not None and window_uid and cache is not None:
+            from hashing import tree_hash as _tree_hash
+            named = sum(
+                1 for e in tree.flat_list()[1:] if (e.name or "").strip()
+            )
+            cache.put(
+                window_uid,
+                tree=tree,
+                serialized=tree.to_dict(),
+                tree_hash=_tree_hash(tree),
+                max_depth=int(tree_cfg.get("max_depth", 8)),
+                capture_ms=capture_ms,
+                node_count=node_count,
+                named_node_count=named,
+            )
+
+        return tree, {
+            "cache": "bypass" if not use_cache else "miss",
+            "capture_ms": capture_ms,
+            "node_count": node_count,
+        }
+
+    @staticmethod
+    def _tree_cache():
+        """The session-scoped TreeCache (lazy import avoids cycles)."""
+        try:
+            from session import get_session
+            return get_session().tree_cache
+        except Exception:
+            return None
 
     def get_screenshot(self, hwnd=None) -> Optional[bytes]:
         return self._adapter.get_screenshot(hwnd)
